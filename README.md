@@ -1,4 +1,9 @@
-## Usage
+This release introduces optional proxy support to help improve download performance on networks with bandwidth throttling or routing limitations.
+
+In internal testing, proxy-assisted downloads showed substantial speed improvements compared to direct connections. Actual performance may vary depending on the proxy, server, and network conditions.
+
+
+### Usage
 
 FastDL is a PowerShell-based script and works the same across platforms once PowerShell is available.
 
@@ -35,7 +40,7 @@ brew install --cask powershell
 **Run**
 
 ```bash
-pwsh -Command "irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v1.0.0/fastdl.ps1 | iex"
+pwsh -Command "irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v2.0.0/fastdl.ps1 | iex"
 ```
 
 ---
@@ -56,7 +61,7 @@ sudo apt install -y powershell
 **Run**
 
 ```bash
-pwsh -Command "irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v1.0.0/fastdl.ps1 | iex"
+pwsh -Command "irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v2.0.0/fastdl.ps1 | iex"
 ```
 
 ---
@@ -67,4 +72,7 @@ pwsh -Command "irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v1.0.0/f
 * The script does not require administrator/root privileges.
 * Source code can be reviewed safely before execution:
 
-[https://raw.githubusercontent.com/rinkanekoii/fastdl/v1.0.0/fastdl.ps1](https://raw.githubusercontent.com/rinkanekoii/fastdl/v1.0.0/fastdl.ps1)
+[https://raw.githubusercontent.com/rinkanekoii/fastdl/v2.0.0/fastdl.ps1](https://raw.githubusercontent.com/rinkanekoii/fastdl/v2.0.0/fastdl.ps1)
+
+**Full Changelog**: https://github.com/rinkanekoii/fastdl/compare/v1.0.0...v2.0.0
+
