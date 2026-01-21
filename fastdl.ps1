@@ -124,10 +124,7 @@ function Start-Download {
             "--max-download-limit=0",
             "--disk-cache=64M",
             "--optimize-concurrent-downloads=true",
-            "--stream-piece-selector=inorder",
-            "--bt-max-peers=0",
-            "--follow-metalink=mem",
-            "--metalink-servers=16"
+            "--stream-piece-selector=inorder"
         )
     } else {
         # BALANCED MODE: Stable settings for reliability
