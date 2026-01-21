@@ -1,748 +1,719 @@
+﻿#!/usr/bin/env pwsh
 #Requires -Version 5.1
 
 [CmdletBinding()]
-param()
+param(
+    [string]$Url,
+    [string]$Proxy,
+    [switch]$Fast
+)
 
 # ============================================================================
-# OS Detection & Platform-Specific Configuration
+# Cross-Platform Configuration
 # ============================================================================
 
-function Get-OSPlatform {
-    if ($PSVersionTable.PSVersion.Major -ge 6) {
-        # PowerShell Core 6+
-        if ($IsWindows) { return 'Windows' }
-        if ($IsLinux) { return 'Linux' }
-        if ($IsMacOS) { return 'macOS' }
-    }
-    else {
-        # Windows PowerShell 5.1
-        return 'Windows'
-    }
-    return 'Unknown'
+$script:OS = if ($IsWindows -or $env:OS -match 'Windows') { 'Windows' }
+             elseif ($IsLinux) { 'Linux' }
+             elseif ($IsMacOS) { 'macOS' }
+             else { 'Windows' }
+
+$script:TempDir = Join-Path ([System.IO.Path]::GetTempPath()) "fastdl_$PID"
+$script:Aria2 = $null
+$script:DefaultProxy = 'http://115.75.184.174:8080'
+$script:Proxy = ''
+
+$script:DownloadDir = if ($script:OS -eq 'Windows') {
+    Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'
+} else {
+    Join-Path $env:HOME 'Downloads'
 }
-
-function Initialize-PlatformConfig {
-    $platform = Get-OSPlatform
-    
-    $config = @{
-        Platform = $platform
-    }
-    
-    switch ($platform) {
-        'Windows' {
-            $config.DataDir = Join-Path $env:APPDATA "FastDL"
-            $config.TempDir = Join-Path $env:TEMP "fastdl_session"
-            $config.Aria2Path = Join-Path (Join-Path $env:APPDATA "FastDL") "aria2c.exe"
-            $config.Aria2Version = "1.37.0"
-            $config.Aria2Url = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
-            $config.Aria2ExeName = "aria2c.exe"
-            $config.DefaultDownloadDir = Join-Path ([Environment]::GetFolderPath("UserProfile")) "Downloads"
-            $config.ArchiveFormat = "zip"
-        }
-        'Linux' {
-            $homeDir = $env:HOME
-            $config.DataDir = Join-Path $homeDir ".local/share/fastdl"
-            $config.TempDir = Join-Path $homeDir ".cache/fastdl_session"
-            $config.Aria2Path = Join-Path (Join-Path $homeDir ".local/share/fastdl") "aria2c"
-            $config.Aria2Version = "1.37.0"
-            $config.Aria2Url = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-linux-gnu-64bit-build1.tar.bz2"
-            $config.Aria2ExeName = "aria2c"
-            $config.DefaultDownloadDir = Join-Path $homeDir "Downloads"
-            $config.ArchiveFormat = "tar.bz2"
-        }
-        'macOS' {
-            $homeDir = $env:HOME
-            $config.DataDir = Join-Path $homeDir "Library/Application Support/FastDL"
-            $config.TempDir = Join-Path $homeDir ".cache/fastdl_session"
-            $config.Aria2Path = Join-Path (Join-Path $homeDir "Library/Application Support/FastDL") "aria2c"
-            $config.Aria2Version = "1.37.0"
-            $config.Aria2Url = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-osx-darwin.tar.bz2"
-            $config.Aria2ExeName = "aria2c"
-            $config.DefaultDownloadDir = Join-Path $homeDir "Downloads"
-            $config.ArchiveFormat = "tar.bz2"
-        }
-        default {
-            throw "Unsupported operating system: $platform"
-        }
-    }
-    
-    $config.MaxConnections = 16
-    $config.MinConnections = 1
-    
-    return $config
-}
-
-$script:Config = Initialize-PlatformConfig
-
-# ============================================================================
-# Configuration & Constants
-# ============================================================================
 
 $script:Presets = @{
-    Balanced = @{
-        Name = "Balanced"
+    Stable = @{ 
+        Label = 'Stable (16 connections, 1M chunks)'
+        Desc  = 'Works with most servers, reliable'
         Connections = 16
-        ChunkSize = "1M"
-        Turbo = $false
-        Description = "Stable, works with most servers"
+        Chunk = '1M'
     }
-    Turbo = @{
-        Name = "Turbo"
+    Speed = @{ 
+        Label = 'Max Speed (16 conn x max split)'
+        Desc  = 'Fastest, aggressive settings'
         Connections = 16
-        ChunkSize = "1M"
-        Turbo = $true
-        Description = "Maximum speed, aggressive retry"
-    }
-    Conservative = @{
-        Name = "Conservative"
-        Connections = 8
-        ChunkSize = "2M"
-        Turbo = $false
-        Description = "Fewer connections, for slow servers"
+        Chunk = '1M'
     }
 }
 
+$script:Aria2Urls = @{
+    Windows = 'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip'
+    Linux   = 'https://github.com/q3aql/aria2-static-builds/releases/download/v1.37.0/aria2-1.37.0-linux-gnu-64bit-build1.tar.bz2'
+    macOS   = 'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-osx-darwin.tar.bz2'
+}
+
 # ============================================================================
-# Utility Functions
+# Helpers
 # ============================================================================
 
 function Write-Status {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$Message,
-        
-        [ValidateSet('Info','Success','Warning','Error','Running')]
-        [string]$Type = 'Info'
-    )
-    
-    $config = @{
-        Info    = @{ Color = 'Gray';   Prefix = '[i]' }
-        Success = @{ Color = 'Green';  Prefix = '[✓]' }
-        Warning = @{ Color = 'Yellow'; Prefix = '[!]' }
-        Error   = @{ Color = 'Red';    Prefix = '[✗]' }
-        Running = @{ Color = 'Cyan';   Prefix = '[→]' }
+    param([string]$Msg, [string]$Type = 'Info')
+    $map = @{
+        Info    = @{ C = 'Gray';   P = '[i]' }
+        Success = @{ C = 'Green';  P = '[+]' }
+        Warning = @{ C = 'Yellow'; P = '[!]' }
+        Error   = @{ C = 'Red';    P = '[x]' }
+        Action  = @{ C = 'Cyan';   P = '[>]' }
     }
+    $e = $map[$Type]
+    Write-Host "$($e.P) $Msg" -ForegroundColor $e.C
+}
+
+function Test-Url {
+    param([string]$U)
+    return $U -match '^https?://.+'
+}
+
+function Test-ProxyAvailable {
+    param([string]$ProxyUrl)
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        $null = Invoke-WebRequest -Uri 'http://www.gstatic.com/generate_204' -Proxy $ProxyUrl -TimeoutSec 5 -UseBasicParsing
+        return $true
+    }
+    catch { return $false }
+}
+
+function Initialize-Proxy {
+    if ($script:Proxy) { return }
     
-    $c = $config[$Type]
-    Write-Host "$($c.Prefix) $Message" -ForegroundColor $c.Color
+    Write-Host ''
+    Write-Status "VN proxy available: $($script:DefaultProxy)" -Type Info
+    $useProxy = Read-Choice -Prompt 'Use this proxy?' -Options @('Yes', 'No')
+    
+    if ($useProxy -eq 1) {
+        Write-Status "Testing VN proxy ($($script:DefaultProxy))..." -Type Action
+        if (Test-ProxyAvailable -ProxyUrl $script:DefaultProxy) {
+            $script:Proxy = $script:DefaultProxy
+            Write-Status 'VN proxy OK!' -Type Success
+        }
+        else {
+            Write-Status 'VN proxy unavailable, using direct connection' -Type Warning
+        }
+    }
+    else {
+        Write-Status 'Using direct connection' -Type Info
+    }
+}
+
+function Get-FileName {
+    param([string]$U)
+    try {
+        $uri = [System.Uri]::new($U)
+        $path = $uri.AbsolutePath
+        
+        # Get filename from path
+        $n = [System.IO.Path]::GetFileName($path)
+        
+        # URL decode the filename
+        if (-not [string]::IsNullOrWhiteSpace($n)) {
+            $n = [System.Uri]::UnescapeDataString($n)
+        }
+        
+        # Validate filename
+        if ([string]::IsNullOrWhiteSpace($n) -or $n -eq '/' -or $n -notmatch '\.\w+$') {
+            # Try to get from query string or content-disposition later
+            return "download_$(Get-Date -Format 'HHmmss')"
+        }
+        
+        # Clean invalid characters
+        $invalid = [System.IO.Path]::GetInvalidFileNameChars()
+        foreach ($c in $invalid) { $n = $n.Replace($c, '_') }
+        
+        return $n
+    }
+    catch { return "download_$(Get-Date -Format 'HHmmss')" }
 }
 
 function Format-FileSize {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][long]$Bytes)
-    
-    if ($Bytes -ge 1TB) { return "{0:N2} TB" -f ($Bytes / 1TB) }
+    param([long]$Bytes)
     if ($Bytes -ge 1GB) { return "{0:N2} GB" -f ($Bytes / 1GB) }
     if ($Bytes -ge 1MB) { return "{0:N2} MB" -f ($Bytes / 1MB) }
     if ($Bytes -ge 1KB) { return "{0:N2} KB" -f ($Bytes / 1KB) }
     return "$Bytes B"
 }
 
+function Format-Speed {
+    param([double]$BytesPerSec)
+    if ($BytesPerSec -ge 1GB) { return "{0:N2} GB/s" -f ($BytesPerSec / 1GB) }
+    if ($BytesPerSec -ge 1MB) { return "{0:N2} MB/s" -f ($BytesPerSec / 1MB) }
+    if ($BytesPerSec -ge 1KB) { return "{0:N2} KB/s" -f ($BytesPerSec / 1KB) }
+    return "{0:N0} B/s" -f $BytesPerSec
+}
+
 function Format-Duration {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][TimeSpan]$TimeSpan)
-    
-    if ($TimeSpan.TotalHours -ge 1) {
-        return "{0:D2}:{1:D2}:{2:D2}" -f $TimeSpan.Hours, $TimeSpan.Minutes, $TimeSpan.Seconds
+    param([TimeSpan]$Duration)
+    if ($Duration.TotalHours -ge 1) {
+        return "{0:D2}:{1:D2}:{2:D2}" -f [int]$Duration.TotalHours, $Duration.Minutes, $Duration.Seconds
     }
-    return "{0:D2}:{1:D2}" -f $TimeSpan.Minutes, $TimeSpan.Seconds
+    return "{0:D2}:{1:D2}" -f $Duration.Minutes, $Duration.Seconds
 }
 
-function Test-Url {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Url)
-    
-    return $Url -match '^https?://.+\..+'
-}
-
-function Initialize-Environment {
-    [CmdletBinding()]
-    param()
-    
+function Get-FileInfo {
+    param([string]$Url)
     try {
-        foreach ($dir in @($script:Config.DataDir, $script:Config.TempDir)) {
-            if (-not (Test-Path $dir)) {
-                New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null
-            }
-        }
-        return $true
-    }
-    catch {
-        Write-Status "Failed to create directories: $_" -Type Error
-        return $false
-    }
-}
-
-# ============================================================================
-# Archive Extraction Functions
-# ============================================================================
-
-function Expand-TarBz2 {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$Path,
-        
-        [Parameter(Mandatory)]
-        [string]$DestinationPath
-    )
-    
-    try {
-        if (-not (Test-Path $DestinationPath)) {
-            New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
-        }
-        
-        # Try using tar command (available on modern systems)
-        if (Get-Command tar -ErrorAction SilentlyContinue) {
-            $result = tar -xjf "$Path" -C "$DestinationPath" 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                return $true
-            }
-        }
-        
-        # Fallback: manual extraction (requires bzip2 and tar separately)
-        Write-Status "Attempting manual extraction..." -Type Info
-        
-        # Check for bzip2
-        if (-not (Get-Command bunzip2 -ErrorAction SilentlyContinue)) {
-            throw "tar or bunzip2 not found. Please install: sudo apt install tar bzip2 (Linux) or brew install bzip2 (macOS)"
-        }
-        
-        $tarFile = $Path -replace '\.bz2$', ''
-        
-        # Decompress bz2
-        bunzip2 -k "$Path" 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to decompress bz2 file"
-        }
-        
-        # Extract tar
-        tar -xf "$tarFile" -C "$DestinationPath" 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Remove-Item $tarFile -Force -ErrorAction SilentlyContinue
-            return $true
-        }
-        
-        throw "Failed to extract tar file"
-    }
-    catch {
-        Write-Status "Extraction failed: $_" -Type Error
-        return $false
-    }
-}
-
-# ============================================================================
-# Aria2 Management
-# ============================================================================
-
-function Test-Aria2Installed {
-    # Check if aria2c is in PATH (system-wide installation)
-    if (Get-Command aria2c -ErrorAction SilentlyContinue) {
-        $script:Config.Aria2Path = "aria2c"
-        return $true
-    }
-    
-    # Check local installation
-    return (Test-Path $script:Config.Aria2Path)
-}
-
-function Install-Aria2 {
-    [CmdletBinding()]
-    param()
-    
-    if (Test-Aria2Installed) {
-        return $true
-    }
-    
-    if (-not (Initialize-Environment)) {
-        return $false
-    }
-    
-    Write-Status "Downloading aria2c for $($script:Config.Platform) (one-time setup)..." -Type Running
-    
-    $archiveName = if ($script:Config.ArchiveFormat -eq "zip") { "aria2.zip" } else { "aria2.tar.bz2" }
-    $archivePath = Join-Path $script:Config.TempDir $archiveName
-    $extractPath = Join-Path $script:Config.TempDir "aria2-extract"
-    
-    try {
-        # Download with progress
         $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $script:Config.Aria2Url -OutFile $archivePath `
-            -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+        $proxyParam = @{}
+        if ($script:Proxy) { $proxyParam['Proxy'] = $script:Proxy }
         
-        Write-Status "Extracting aria2c..." -Type Running
+        $resp = Invoke-WebRequest -Uri $Url -Method Head -UseBasicParsing -TimeoutSec 15 @proxyParam -ErrorAction Stop
+        $size = [long]$resp.Headers['Content-Length']
         
-        # Extract based on format
-        if (Test-Path $extractPath) {
-            Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue
+        # Try to get filename from Content-Disposition header
+        $fileName = $null
+        $cd = $resp.Headers['Content-Disposition']
+        if ($cd -and $cd -match 'filename[*]?=(?:UTF-8'''')?["\s]*([^";\r\n]+)') {
+            $fileName = $Matches[1].Trim('"', ' ')
+            $fileName = [System.Uri]::UnescapeDataString($fileName)
         }
         
-        if ($script:Config.ArchiveFormat -eq "zip") {
-            Expand-Archive -Path $archivePath -DestinationPath $extractPath -Force -ErrorAction Stop
+        return @{ Size = $size; Success = $true; FileName = $fileName }
+    }
+    catch {
+        return @{ Size = 0; Success = $false; Error = $_.Exception.Message; FileName = $null }
+    }
+}
+
+# ============================================================================
+# Aria2 Setup (Temporary, No Install)
+# ============================================================================
+
+function Initialize-Aria2 {
+    if ($script:Aria2 -and (Test-Path $script:Aria2)) { return $script:Aria2 }
+
+    # Check PATH first
+    $cmd = Get-Command aria2c -ErrorAction SilentlyContinue
+    if ($cmd) {
+        $script:Aria2 = $cmd.Source
+        return $script:Aria2
+    }
+
+    Write-Status "Downloading aria2 for $($script:OS) (temp, no install)..." -Type Action
+
+    if (-not (Test-Path $script:TempDir)) {
+        New-Item -ItemType Directory -Path $script:TempDir -Force | Out-Null
+    }
+
+    $url = $script:Aria2Urls[$script:OS]
+    $ext = if ($script:OS -eq 'Windows') { 'zip' } else { 'tar.bz2' }
+    $archive = Join-Path $script:TempDir "aria2.$ext"
+
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing -TimeoutSec 120
+
+        if ($script:OS -eq 'Windows') {
+            Expand-Archive -Path $archive -DestinationPath $script:TempDir -Force
+            $exe = Get-ChildItem -Path $script:TempDir -Recurse -Filter 'aria2c.exe' | Select-Object -First 1
+            $script:Aria2 = $exe.FullName
         }
         else {
-            if (-not (Expand-TarBz2 -Path $archivePath -DestinationPath $extractPath)) {
-                throw "Failed to extract tar.bz2 archive"
+            # Linux/macOS: extract tar.bz2
+            Push-Location $script:TempDir
+            tar -xjf $archive 2>$null
+            Pop-Location
+            
+            $exeName = 'aria2c'
+            $exe = Get-ChildItem -Path $script:TempDir -Recurse -Filter $exeName | Select-Object -First 1
+            if ($exe) {
+                chmod +x $exe.FullName 2>$null
+                $script:Aria2 = $exe.FullName
             }
         }
-        
-        # Find and copy executable
-        $exe = Get-ChildItem -Path $extractPath -Recurse -Filter $script:Config.Aria2ExeName -ErrorAction Stop | 
-               Select-Object -First 1
-        
-        if (-not $exe) {
-            throw "$($script:Config.Aria2ExeName) not found in archive"
+
+        Remove-Item $archive -Force -ErrorAction SilentlyContinue
+
+        if (-not $script:Aria2 -or -not (Test-Path $script:Aria2)) {
+            throw 'aria2c not found after extraction'
         }
-        
-        Copy-Item $exe.FullName -Destination $script:Config.Aria2Path -Force -ErrorAction Stop
-        
-        # Make executable on Unix-like systems
-        if ($script:Config.Platform -in @('Linux', 'macOS')) {
-            chmod +x $script:Config.Aria2Path 2>&1 | Out-Null
-        }
-        
-        Write-Status "aria2c is ready" -Type Success
-        
-        # Cleanup
-        Remove-Item $archivePath, $extractPath -Recurse -Force -ErrorAction SilentlyContinue
-        
-        return $true
+
+        Write-Status 'aria2 ready!' -Type Success
+        return $script:Aria2
     }
     catch {
-        Write-Status "Failed to download aria2: $_" -Type Error
-        
-        # Suggest package manager installation
-        $suggestion = switch ($script:Config.Platform) {
-            'Linux' { "sudo apt install aria2 (Debian/Ubuntu) or sudo yum install aria2 (RHEL/CentOS)" }
-            'macOS' { "brew install aria2" }
-            default { "" }
+        $installCmd = switch ($script:OS) {
+            'Windows' { 'winget install aria2' }
+            'Linux'   { 'sudo apt install aria2  # or: sudo yum install aria2' }
+            'macOS'   { 'brew install aria2' }
         }
-        
-        if ($suggestion) {
-            Write-Status "Alternatively, install via package manager: $suggestion" -Type Info
-        }
-        
-        return $false
+        throw "Failed to download aria2. Install manually: $installCmd`nError: $_"
     }
 }
 
-function Get-Aria2Arguments {
-    [CmdletBinding()]
+# ============================================================================
+# Download Engine
+# ============================================================================
+
+function Start-Download {
     param(
         [Parameter(Mandatory)][string]$Url,
-        [Parameter(Mandatory)][string]$OutputDir,
         [int]$Connections = 16,
-        [switch]$Turbo,
-        [string]$FileName
+        [string]$Chunk = '1M',
+        [switch]$MaxSpeed
     )
+
+    if (-not (Test-Url $Url)) {
+        Write-Status 'Invalid URL' -Type Error
+        return $false
+    }
+
+    $aria2 = Initialize-Aria2
+
+    if (-not (Test-Path $script:DownloadDir)) {
+        New-Item -ItemType Directory -Path $script:DownloadDir -Force | Out-Null
+    }
+
+    # Get file info first (size and filename from headers)
+    Write-Status "Getting file info..." -Type Action
+    $fileInfo = Get-FileInfo -Url $Url
+    $totalSize = $fileInfo.Size
     
-    $args = New-Object System.Collections.ArrayList
+    # Get filename: prefer Content-Disposition, then URL, then fallback
+    $fileName = if ($fileInfo.FileName) { 
+        $fileInfo.FileName 
+    } else { 
+        Get-FileName -U $Url 
+    }
     
-    # Core arguments
-    [void]$args.AddRange(@(
-        "`"$Url`""
-        "-d", "`"$OutputDir`""
-        "-x", $Connections
-        "-s", $Connections
-        "-j", "10"
-        "-c"
-        "--file-allocation=none"
-        "--console-log-level=notice"
-        "--summary-interval=1"
-        "--auto-file-renaming=false"
-        "--allow-overwrite=true"
-        "--check-certificate=false"
-        "--remote-time=true"
-        "--enable-http-keep-alive=true"
-        "--http-accept-gzip=true"
-        "--always-resume=true"
-        "--continue=true"
-    ))
-    
-    if ($Turbo) {
-        # Turbo mode: Aggressive settings
-        [void]$args.AddRange(@(
-            "-k", "1M"
-            "--min-split-size=1M"
-            "--piece-length=1M"
-            "--max-connection-per-server=16"
-            "--split=16"
-            "--max-concurrent-downloads=16"
-            "--connect-timeout=15"
-            "--timeout=300"
-            "--max-tries=0"
-            "--retry-wait=1"
-            "--max-file-not-found=5"
-            "--uri-selector=feedback"
-            "--max-resume-failure-tries=0"
-            "--reuse-uri=true"
-            "--max-download-limit=0"
-            "--disk-cache=128M"
-            "--optimize-concurrent-downloads=true"
-            "--stream-piece-selector=inorder"
-            "--bt-max-peers=0"
-        ))
+    if (-not $fileInfo.Success) {
+        Write-Status "Cannot get file info: $($fileInfo.Error)" -Type Warning
+        Write-Status "Continuing without size info..." -Type Info
     }
     else {
-        # Balanced mode: Stable settings
-        [void]$args.AddRange(@(
-            "-k", "1M"
-            "--min-split-size=1M"
-            "--piece-length=1M"
-            "--max-connection-per-server=16"
-            "--connect-timeout=20"
-            "--timeout=180"
-            "--max-tries=10"
-            "--retry-wait=5"
-            "--max-file-not-found=5"
-            "--uri-selector=adaptive"
-            "--max-resume-failure-tries=10"
-            "--disk-cache=32M"
-            "--lowest-speed-limit=0"
-        ))
+        if ($totalSize -gt 0) {
+            Write-Status "File size: $(Format-FileSize $totalSize)" -Type Info
+        }
+        Write-Status "File name: $fileName" -Type Info
     }
-    
-    if ($FileName) {
-        [void]$args.AddRange(@("-o", "`"$FileName`""))
-    }
-    
-    return $args -join " "
-}
 
-# ============================================================================
-# Download Functions
-# ============================================================================
+    # aria2 limit: max 16 connections per server
+    $conn = [Math]::Min(16, $Connections)
 
-function Start-DownloadTask {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$Url,
-        
-        [int]$Connections = 16,
-        
-        [string]$OutputDir,
-        
-        [string]$FileName,
-        
-        [switch]$Turbo,
-        
-        [switch]$Quiet
+    $args = @(
+        $Url
+        '-d', $script:DownloadDir
+        '-o', $fileName
+        '-x', $conn
+        '-s', $conn
+        '-j', $conn
+        '-k', $Chunk
+        "--min-split-size=$Chunk"
+        "--max-connection-per-server=$conn"
+        "--split=$conn"
+        '-c'
+        '--file-allocation=none'
+        '--summary-interval=1'
+        '--auto-file-renaming=false'
+        '--allow-overwrite=true'
+        '--check-certificate=false'
+        '--remote-time=true'
+        '--enable-http-keep-alive=true'
+        '--http-accept-gzip=true'
+        '--console-log-level=notice'
+        '--download-result=full'
     )
-    
-    # Validate
-    if (-not (Test-Url $Url)) {
-        Write-Status "Invalid URL: $Url" -Type Error
-        return $false
+
+    if ($MaxSpeed) {
+        # Aggressive settings for max speed
+        $args += @(
+            '--max-tries=0'
+            '--retry-wait=1'
+            '--connect-timeout=5'
+            '--timeout=300'
+            '--max-file-not-found=5'
+            '--stream-piece-selector=geom'
+            '--uri-selector=adaptive'
+            '--disk-cache=512M'
+            '--piece-length=1M'
+            '--optimize-concurrent-downloads=true'
+            '--async-dns=true'
+            '--max-download-limit=0'
+            '--lowest-speed-limit=0'
+            '--socket-recv-buffer-size=16M'
+            '--no-netrc=true'
+            '--always-resume=true'
+            '--max-resume-failure-tries=0'
+            '--http-no-cache=true'
+        )
     }
-    
-    if (-not (Install-Aria2)) {
-        return $false
+    else {
+        $args += @(
+            '--max-tries=10'
+            '--retry-wait=2'
+            '--connect-timeout=15'
+            '--timeout=600'
+        )
     }
-    
-    # Setup directories
-    if (-not $OutputDir) {
-        $OutputDir = $script:Config.DefaultDownloadDir
+
+    if ($script:Proxy) {
+        $args += "--all-proxy=$($script:Proxy)"
     }
-    
-    if (-not (Test-Path $OutputDir)) {
-        try {
-            New-Item -ItemType Directory -Path $OutputDir -Force -ErrorAction Stop | Out-Null
-        }
-        catch {
-            Write-Status "Failed to create output directory: $_" -Type Error
-            return $false
-        }
-    }
-    
-    # Normalize connections
-    $Connections = [Math]::Max($script:Config.MinConnections, 
-                              [Math]::Min($script:Config.MaxConnections, $Connections))
-    
-    # Display info
-    if (-not $Quiet) {
-        Write-Host ""
-        if ($Turbo) {
-            Write-Status "Engine: aria2c TURBO on $($script:Config.Platform)" -Type Running
-        } else {
-            Write-Status "Engine: aria2c BALANCED on $($script:Config.Platform)" -Type Running
-        }
-        
-        $chunkSize = "1M"  # Both modes now use 1M minimum per aria2c requirements
-        Write-Status "Connections: $Connections | Chunk: $chunkSize" -Type Info
-        Write-Status "Output: $OutputDir" -Type Info
-        Write-Host ""
-    }
-    
-    # Build arguments
-    $arguments = Get-Aria2Arguments -Url $Url -OutputDir $OutputDir `
-        -Connections $Connections -Turbo:$Turbo -FileName $FileName
-    
-    # Execute
+
+    Write-Host ''
+    $mode = if ($MaxSpeed) { 'MAX SPEED' } else { 'Stable' }
+    Write-Status "$conn connections | Chunk: $Chunk | Mode: $mode" -Type Action
+    if ($script:Proxy) { Write-Status "Proxy: $($script:Proxy)" -Type Info }
+    Write-Status "Save to: $script:DownloadDir\$fileName" -Type Info
+    Write-Host ''
+
+    # Track download with progress
     $startTime = Get-Date
     
-    try {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $script:Config.Aria2Path
-        $psi.Arguments = $arguments
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $false
-        
-        $process = [System.Diagnostics.Process]::Start($psi)
-        $process.WaitForExit()
-        
-        $elapsed = (Get-Date) - $startTime
-        
-        if ($process.ExitCode -eq 0) {
-            if (-not $Quiet) {
-                Write-Host ""
-                Write-Status "Complete! Time: $(Format-Duration $elapsed)" -Type Success
-            }
-            return $true
-        }
-        else {
-            Write-Status "Download failed (exit code: $($process.ExitCode))" -Type Error
-            return $false
+    $destFile = Join-Path $script:DownloadDir $fileName
+    $ariaControl = "$destFile.aria2"
+    
+    # Start aria2 process
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $aria2
+    $psi.Arguments = ($args | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    
+    # Capture output asynchronously
+    $outputBuilder = [System.Text.StringBuilder]::new()
+    $errorBuilder = [System.Text.StringBuilder]::new()
+    
+    $outputHandler = {
+        if ($EventArgs.Data) {
+            $outputBuilder.AppendLine($EventArgs.Data)
         }
     }
-    catch {
-        Write-Status "Error: $_" -Type Error
+    $errorHandler = {
+        if ($EventArgs.Data) {
+            $errorBuilder.AppendLine($EventArgs.Data)
+        }
+    }
+    
+    $process.EnableRaisingEvents = $true
+    Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -Action $outputHandler -SourceIdentifier "aria2out_$PID" | Out-Null
+    Register-ObjectEvent -InputObject $process -EventName ErrorDataReceived -Action $errorHandler -SourceIdentifier "aria2err_$PID" | Out-Null
+    
+    try {
+        $null = $process.Start()
+        $process.BeginOutputReadLine()
+        $process.BeginErrorReadLine()
+        
+        # Monitor progress
+        while (-not $process.HasExited) {
+            Start-Sleep -Milliseconds 500
+            
+            $now = Get-Date
+            $elapsed = $now - $startTime
+            
+            # Get current downloaded size
+            $currentBytes = 0
+            if (Test-Path $destFile) {
+                $currentBytes = (Get-Item $destFile -ErrorAction SilentlyContinue).Length
+            }
+            
+            # Calculate overall speed (total downloaded / elapsed time) - more stable
+            $overallSpeed = if ($elapsed.TotalSeconds -gt 1) { 
+                $currentBytes / $elapsed.TotalSeconds 
+            } else { 0 }
+            
+            # Progress display
+            if ($totalSize -gt 0 -and $currentBytes -gt 0) {
+                $percent = [Math]::Min(100, [Math]::Round(($currentBytes / $totalSize) * 100, 1))
+                
+                # ETA based on overall speed
+                $remaining = $totalSize - $currentBytes
+                $eta = if ($overallSpeed -gt 0) { 
+                    [TimeSpan]::FromSeconds($remaining / $overallSpeed) 
+                } else { 
+                    [TimeSpan]::Zero 
+                }
+                $etaStr = if ($eta.TotalSeconds -gt 0) { Format-Duration $eta } else { "--:--" }
+                
+                $speedStr = Format-Speed $overallSpeed
+                $dlStr = Format-FileSize $currentBytes
+                $totalStr = Format-FileSize $totalSize
+                
+                $status = "`r  [{0,5:N1}%]  {1,10} / {2,-10}  Speed: {3,12}  ETA: {4}   " -f $percent, $dlStr, $totalStr, $speedStr, $etaStr
+                Write-Host $status -NoNewline
+            }
+            elseif ($currentBytes -gt 0) {
+                # Unknown total size
+                $speedStr = Format-Speed $overallSpeed
+                $dlStr = Format-FileSize $currentBytes
+                $elapsedStr = Format-Duration $elapsed
+                
+                $status = "`r  Downloaded: {0,10}  Speed: {1,12}  Elapsed: {2}   " -f $dlStr, $speedStr, $elapsedStr
+                Write-Host $status -NoNewline
+            }
+        }
+        
+        $process.WaitForExit()
+        $code = $process.ExitCode
+        
+        Write-Host ""
+    }
+    finally {
+        Unregister-Event -SourceIdentifier "aria2out_$PID" -ErrorAction SilentlyContinue
+        Unregister-Event -SourceIdentifier "aria2err_$PID" -ErrorAction SilentlyContinue
+        Get-Job -Name "aria2out_$PID" -ErrorAction SilentlyContinue | Remove-Job -Force
+        Get-Job -Name "aria2err_$PID" -ErrorAction SilentlyContinue | Remove-Job -Force
+    }
+    
+    $endTime = Get-Date
+    $totalDuration = $endTime - $startTime
+    
+    # Get final file size
+    $finalSize = 0
+    if (Test-Path $destFile) {
+        $finalSize = (Get-Item $destFile).Length
+    }
+    
+    # Calculate average speed
+    $avgSpeedTotal = if ($totalDuration.TotalSeconds -gt 0) { 
+        $finalSize / $totalDuration.TotalSeconds 
+    } else { 0 }
+
+    Write-Host ''
+    if ($code -eq 0) {
+        Write-Host '╔══════════════════════════════════════════════════════════════╗' -ForegroundColor Green
+        Write-Host '║                    DOWNLOAD COMPLETE                         ║' -ForegroundColor Green
+        Write-Host '╠══════════════════════════════════════════════════════════════╣' -ForegroundColor Green
+        Write-Host ("║  File: {0,-53}║" -f ($fileName.Substring(0, [Math]::Min(53, $fileName.Length)))) -ForegroundColor Green
+        Write-Host ("║  Size: {0,-53}║" -f (Format-FileSize $finalSize)) -ForegroundColor Green
+        Write-Host ("║  Time: {0,-53}║" -f (Format-Duration $totalDuration)) -ForegroundColor Green
+        Write-Host ("║  Avg Speed: {0,-48}║" -f (Format-Speed $avgSpeedTotal)) -ForegroundColor Green
+        Write-Host '╚══════════════════════════════════════════════════════════════╝' -ForegroundColor Green
+        return $true
+    }
+    else {
+        Write-Host '╔══════════════════════════════════════════════════════════════╗' -ForegroundColor Red
+        Write-Host '║                    DOWNLOAD FAILED                           ║' -ForegroundColor Red
+        Write-Host '╠══════════════════════════════════════════════════════════════╣' -ForegroundColor Red
+        Write-Host ("║  Exit Code: {0,-48}║" -f $code) -ForegroundColor Red
+        Write-Host ("║  Time Elapsed: {0,-45}║" -f (Format-Duration $totalDuration)) -ForegroundColor Red
+        if ($finalSize -gt 0) {
+            Write-Host ("║  Downloaded: {0,-47}║" -f (Format-FileSize $finalSize)) -ForegroundColor Red
+        }
+        Write-Host '╚══════════════════════════════════════════════════════════════╝' -ForegroundColor Red
+        
+        # Show error output if any
+        $errOut = $errorBuilder.ToString()
+        if ($errOut) {
+            Write-Status "Error details:" -Type Error
+            $errOut -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 5 | ForEach-Object {
+                Write-Host "  $_" -ForegroundColor DarkRed
+            }
+        }
         return $false
     }
 }
 
 # ============================================================================
-# UI Functions
+# UI
 # ============================================================================
 
 function Show-Banner {
     Clear-Host
-    $platform = $script:Config.Platform
-    $banner = @"
-╔════════════════════════════════════════╗
-║    FastDL - High-Speed Downloader      ║
-║         Powered by aria2c v1.37        ║
-║         Platform: $platform$(' ' * (18 - $platform.Length))   ║
-╚════════════════════════════════════════╝
-"@
-    Write-Host $banner -ForegroundColor Cyan
-    Write-Host ""
+    Write-Host '=====================================' -ForegroundColor Cyan
+    Write-Host '  FastDL - High Speed Downloader    ' -ForegroundColor Cyan
+    Write-Host "  OS: $($script:OS) | No install required" -ForegroundColor DarkGray
+    Write-Host '=====================================' -ForegroundColor Cyan
+    if ($script:Proxy) {
+        Write-Host "  Proxy: $($script:Proxy)" -ForegroundColor Green
+    }
+    Write-Host ''
 }
 
 function Read-Choice {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$Prompt,
-        
-        [Parameter(Mandatory)]
-        [string[]]$Options,
-        
-        [switch]$AllowQuit
-    )
-    
+    param([string]$Prompt, [string[]]$Options)
     Write-Host $Prompt -ForegroundColor Yellow
-    Write-Host ""
-    
     for ($i = 0; $i -lt $Options.Count; $i++) {
         Write-Host "  [$($i + 1)] $($Options[$i])"
     }
-    
-    if ($AllowQuit) {
-        Write-Host "  [Q] Quit" -ForegroundColor DarkGray
-    }
-    
-    Write-Host ""
-    
+    Write-Host '  [Q] Quit' -ForegroundColor DarkGray
+    Write-Host ''
+
     while ($true) {
-        $input = Read-Host "Select"
-        
-        if ($AllowQuit -and $input -match '^[Qq]$') {
-            return -1
+        $sel = Read-Host 'Select'
+        if ($sel -match '^[Qq]$') { return -1 }
+        if ($sel -match '^\d+$' -and [int]$sel -ge 1 -and [int]$sel -le $Options.Count) {
+            return [int]$sel
         }
-        
-        if ($input -match '^\d+$') {
-            $num = [int]$input
-            if ($num -ge 1 -and $num -le $Options.Count) {
-                return $num
-            }
-        }
-        
-        Write-Host "Invalid choice" -ForegroundColor Red
+        Write-Host 'Invalid' -ForegroundColor Red
     }
 }
 
-function Read-Urls {
-    [CmdletBinding()]
-    param()
-    
-    Write-Host "Enter URLs (one per line, empty line to finish):" -ForegroundColor Gray
-    Write-Host ""
-    
-    $urls = New-Object System.Collections.ArrayList
-    $lineNum = 1
-    
-    while ($true) {
-        $input = Read-Host "URL $lineNum"
-        
-        if ([string]::IsNullOrWhiteSpace($input)) {
-            break
-        }
-        
-        if (Test-Url $input) {
-            [void]$urls.Add($input.Trim())
-            $lineNum++
-        }
-        else {
-            Write-Status "Invalid URL, skipping" -Type Warning
-        }
-    }
-    
-    return $urls.ToArray()
-}
+function Menu-Download {
+    param([switch]$Multi)
 
-# ============================================================================
-# Menu Functions
-# ============================================================================
-
-function Show-SingleDownloadMenu {
     Show-Banner
-    Write-Host "═══ Single Download ═══" -ForegroundColor Yellow
-    Write-Host ""
-    
-    # Get URL
-    $url = Read-Host "URL"
-    if ([string]::IsNullOrWhiteSpace($url) -or -not (Test-Url $url)) {
-        Write-Status "Invalid URL" -Type Warning
-        Read-Host "`nPress Enter to continue"
-        return
-    }
-    
-    # Select preset
-    $presetOptions = @()
-    foreach ($key in $script:Presets.Keys) {
-        $p = $script:Presets[$key]
-        $presetOptions += "$($p.Name) - $($p.Description)"
-    }
-    $presetOptions += "Custom"
-    
-    $choice = Read-Choice -Prompt "Download Mode" -Options $presetOptions -AllowQuit
-    if ($choice -eq -1) { return }
-    
-    $preset = $null
-    $connections = 16
-    $turbo = $false
-    
-    if ($choice -le $script:Presets.Count) {
-        $presetKeys = @($script:Presets.Keys)
-        $presetKey = $presetKeys[$choice - 1]
-        $preset = $script:Presets[$presetKey]
-        $connections = $preset.Connections
-        $turbo = $preset.Turbo
+    $title = if ($Multi) { '=== Multiple Downloads ===' } else { '=== Single Download ===' }
+    Write-Host $title -ForegroundColor Yellow
+    Write-Host ''
+
+    $urls = @()
+    if ($Multi) {
+        Write-Host 'Enter URLs (blank line to finish):' -ForegroundColor Gray
+        $i = 1
+        while ($true) {
+            $line = Read-Host "URL $i"
+            if ([string]::IsNullOrWhiteSpace($line)) { break }
+            if (Test-Url $line) { $urls += $line.Trim(); $i++ }
+            else { Write-Status 'Invalid URL, skip' -Type Warning }
+        }
+        if ($urls.Count -eq 0) {
+            Write-Status 'No URLs entered' -Type Warning
+            Read-Host 'Press Enter'
+            return
+        }
     }
     else {
-        # Custom settings
-        $customConn = Read-Host "Number of connections (1-16)"
-        $connections = [Math]::Max(1, [Math]::Min(16, [int]$customConn))
-        
-        $turboChoice = Read-Choice -Prompt "Use Turbo mode?" -Options @("No", "Yes")
-        $turbo = ($turboChoice -eq 2)
+        $url = Read-Host 'URL'
+        if (-not (Test-Url $url)) {
+            Write-Status 'Invalid URL' -Type Warning
+            Read-Host 'Press Enter'
+            return
+        }
+        $urls = @($url)
     }
-    
-    # Download
-    Start-DownloadTask -Url $url -Connections $connections -Turbo:$turbo
-    
-    Read-Host "`nPress Enter to continue"
-}
 
-function Show-MultiDownloadMenu {
-    Show-Banner
-    Write-Host "═══ Multiple Downloads ═══" -ForegroundColor Yellow
-    Write-Host ""
-    
-    $urls = Read-Urls
-    
-    if ($urls.Count -eq 0) {
-        Write-Status "No URLs entered" -Type Warning
-        Read-Host "`nPress Enter to continue"
-        return
-    }
-    
-    Write-Host ""
-    Write-Status "Entered $($urls.Count) URL(s)" -Type Info
-    
-    # Select mode
-    $choice = Read-Choice -Prompt "Download mode for all files" `
-        -Options @("Balanced - Stable", "Turbo - Maximum speed") -AllowQuit
-    
+    # Select preset
+    Write-Host ''
+    $choice = Read-Choice -Prompt 'Download Mode' -Options @(
+        "$($script:Presets.Stable.Label) - $($script:Presets.Stable.Desc)",
+        "$($script:Presets.Speed.Label) - $($script:Presets.Speed.Desc)"
+    )
     if ($choice -eq -1) { return }
-    
-    $turbo = ($choice -eq 2)
-    
-    # Download all
-    Write-Host ""
-    Write-Status "Starting download of $($urls.Count) file(s)..." -Type Running
-    
-    $stats = @{ Success = 0; Failed = 0 }
-    
-    foreach ($url in $urls) {
-        Write-Host "`n$('─' * 60)" -ForegroundColor DarkCyan
-        Write-Host "Downloading: $url" -ForegroundColor Cyan
-        Write-Host "$('─' * 60)" -ForegroundColor DarkCyan
-        
-        if (Start-DownloadTask -Url $url -Connections 16 -Turbo:$turbo) {
-            $stats.Success++
+
+    $preset = if ($choice -eq 1) { $script:Presets.Stable } else { $script:Presets.Speed }
+    $maxSpeed = ($choice -eq 2)
+
+    # Download
+    $ok = 0; $fail = 0
+    foreach ($u in $urls) {
+        if ($Multi -and $urls.Count -gt 1) {
+            Write-Host "`n$('-' * 50)" -ForegroundColor DarkCyan
+            Write-Host $u -ForegroundColor Cyan
         }
-        else {
-            $stats.Failed++
-        }
+        if (Start-Download -Url $u -Connections $preset.Connections -Chunk $preset.Chunk -MaxSpeed:$maxSpeed) { $ok++ }
+        else { $fail++ }
     }
-    
-    # Summary
-    Write-Host ""
-    Write-Host "╔════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║              SUMMARY                   ║" -ForegroundColor Cyan
-    Write-Host "╠════════════════════════════════════════╣" -ForegroundColor Cyan
-    Write-Host ("║  Successful: {0,-25} ║" -f $stats.Success) -ForegroundColor Green
-    
-    $failColor = if ($stats.Failed -gt 0) { 'Red' } else { 'Gray' }
-    Write-Host ("║  Failed:     {0,-25} ║" -f $stats.Failed) -ForegroundColor $failColor
-    Write-Host "╚════════════════════════════════════════╝" -ForegroundColor Cyan
-    
-    Read-Host "`nPress Enter to continue"
+
+    if ($Multi -and $urls.Count -gt 1) {
+        Write-Host "`n=== Summary ===" -ForegroundColor Cyan
+        Write-Status "Success: $ok | Failed: $fail" -Type $(if ($fail -gt 0) { 'Warning' } else { 'Success' })
+    }
+    Read-Host "`nPress Enter"
 }
 
-function Show-MainMenu {
+function Menu-Proxy {
+    Show-Banner
+    Write-Host '=== Proxy Settings ===' -ForegroundColor Yellow
+    Write-Host ''
+    
+    $current = if ($script:Proxy) { $script:Proxy } else { '(none)' }
+    Write-Status "Current: $current" -Type Info
+    Write-Host ''
+
+    $choice = Read-Choice -Prompt 'Options' -Options @('Set HTTP/SOCKS proxy', 'Clear proxy', 'Back')
+    
+    switch ($choice) {
+        1 {
+            Write-Host ''
+            Write-Host 'Examples:' -ForegroundColor Gray
+            Write-Host '  http://proxy-server:8080' -ForegroundColor DarkGray
+            Write-Host '  socks5://127.0.0.1:1080' -ForegroundColor DarkGray
+            Write-Host ''
+            $p = Read-Host 'Proxy URL'
+            if (-not [string]::IsNullOrWhiteSpace($p)) {
+                $newProxy = $p.Trim()
+                Write-Status "Testing proxy ($newProxy)..." -Type Action
+                if (Test-ProxyAvailable -ProxyUrl $newProxy) {
+                    $script:Proxy = $newProxy
+                    Write-Status "Proxy set: $($script:Proxy)" -Type Success
+                }
+                else {
+                    Write-Status 'Proxy unavailable, keeping current settings' -Type Warning
+                }
+            }
+        }
+        2 {
+            $script:Proxy = ''
+            Write-Status 'Proxy cleared' -Type Success
+        }
+    }
+    if ($choice -ne 3 -and $choice -ne -1) { Read-Host 'Press Enter' }
+}
+
+function Main-Menu {
     while ($true) {
         Show-Banner
-        
-        $choice = Read-Choice -Prompt "Main Menu" `
-            -Options @("Single Download", "Multiple Downloads", "Exit") `
-            -AllowQuit
+        $choice = Read-Choice -Prompt 'Main Menu' -Options @(
+            'Single Download',
+            'Multiple Downloads',
+            'Proxy Settings',
+            'Exit'
+        )
         
         switch ($choice) {
-            1 { Show-SingleDownloadMenu }
-            2 { Show-MultiDownloadMenu }
-            { $_ -eq 3 -or $_ -eq -1 } { return }
+            1 { Menu-Download }
+            2 { Menu-Download -Multi }
+            3 { Menu-Proxy }
+            { $_ -eq 4 -or $_ -eq -1 } { return }
         }
     }
 }
 
 # ============================================================================
-# Main Entry Point
+# Entry Point
 # ============================================================================
 
-# Display platform info
-Write-Host "Detected OS: $($script:Config.Platform)" -ForegroundColor Cyan
-
-if (-not (Initialize-Environment)) {
-    Write-Status "Failed to initialize environment" -Type Error
-    exit 1
+# Command-line mode
+if ($Url) {
+    try {
+        Write-Status "OS: $($script:OS)" -Type Info
+        Write-Status "Output: $script:DownloadDir" -Type Info
+        Initialize-Proxy
+        $preset = if ($Fast) { $script:Presets.Speed } else { $script:Presets.Stable }
+        Start-Download -Url $Url -Connections $preset.Connections -Chunk $preset.Chunk -MaxSpeed:$Fast | Out-Null
+    }
+    catch {
+        Write-Status "Error: $_" -Type Error
+    }
+    finally {
+        if (Test-Path $script:TempDir) {
+            Remove-Item $script:TempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    exit
 }
 
-Show-MainMenu
+# Interactive mode
+try {
+    Write-Status "OS: $($script:OS)" -Type Info
+    Write-Status "Output: $script:DownloadDir" -Type Info
+    $null = Initialize-Aria2
+    Initialize-Proxy
+    Main-Menu
+}
+catch {
+    Write-Status "Error: $_" -Type Error
+}
+finally {
+    if (Test-Path $script:TempDir) {
+        Remove-Item $script:TempDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Status 'Temp files cleaned' -Type Info
+    }
+}
 
-Write-Host ""
-Write-Status "Goodbye!" -Type Success
-Write-Host ""
+Write-Host ''
+Write-Status 'Goodbye!' -Type Success
