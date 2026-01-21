@@ -1,2 +1,5 @@
-# fastdl
-Fast multi-connection download tool using PowerShell. Supports HTTP range requests, parallel segments, and large file downloads.
+## Quick Start
+
+```powershell
+irm https://raw.githubusercontent.com/rinkanekoii/fastdl/main/fastdl.ps1 | iex
+```
