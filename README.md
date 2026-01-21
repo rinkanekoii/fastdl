@@ -1,44 +1,70 @@
-# FastDL
+## Usage
 
-FastDL is a cross-platform PowerShell downloader powered by aria2, focused on speed, resume support, and simplicity.
+FastDL is a PowerShell-based script and works the same across platforms once PowerShell is available.
 
+---
 
-## Quick Start
-Run directly using PowerShell:
+### Windows
+
+**Requirements**
+
+* Windows 10/11
+* PowerShell 5.1 or later (PowerShell 7+ recommended)
+
+**Run**
 
 ```powershell
 irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v1.0.0/fastdl.ps1 | iex
 ```
 
+---
 
-## Requirements
-- PowerShell 5.1+ (Windows)
-- PowerShell 7+ recommended (macOS, Linux)
+### macOS
 
-No additional dependencies are required.
+**Requirements**
 
-## Features
-- High-speed multi-connection downloads via aria2
-- Resume interrupted downloads
-- Works on Windows, macOS, and Linux
-- Automatic aria2 setup
-  
-  
-## Supported Platforms
-- Windows (PowerShell 5.1+)
-- macOS (PowerShell 7+)
-- Linux (PowerShell 7+)
+* PowerShell 7+
+* aria2 (installed automatically if missing)
 
+**Install PowerShell**
 
-## Safety
-- Fully open-source
-- No obfuscation or hidden execution
-- aria2c binary is downloaded from official sources
+```bash
+brew install --cask powershell
+```
 
-Users are encouraged to review the source code before running:
+**Run**
 
-**[FastDL v1.0.0](https://raw.githubusercontent.com/rinkanekoii/fastdl/v1.0.0/fastdl.ps1)**
+```bash
+pwsh -Command "irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v1.0.0/fastdl.ps1 | iex"
+```
 
+---
 
-## License
-MIT License
+### Linux
+
+**Requirements**
+
+* PowerShell 7+
+* curl / wget available
+
+**Install PowerShell (example: Ubuntu)**
+
+```bash
+sudo apt install -y powershell
+```
+
+**Run**
+
+```bash
+pwsh -Command "irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v1.0.0/fastdl.ps1 | iex"
+```
+
+---
+
+### Notes
+
+* `irm` and `iex` are PowerShell commands and must be run inside PowerShell (`pwsh`).
+* The script does not require administrator/root privileges.
+* Source code can be reviewed safely before execution:
+
+[https://raw.githubusercontent.com/rinkanekoii/fastdl/v1.0.0/fastdl.ps1](https://raw.githubusercontent.com/rinkanekoii/fastdl/v1.0.0/fastdl.ps1)
