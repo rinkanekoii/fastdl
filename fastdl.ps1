@@ -89,7 +89,7 @@ $script:Presets = @{
     Turbo = @{
         Name = "Turbo"
         Connections = 16
-        ChunkSize = "512K"
+        ChunkSize = "1M"
         Turbo = $true
         Description = "Maximum speed, aggressive retry"
     }
@@ -363,13 +363,13 @@ function Get-Aria2Arguments {
     if ($Turbo) {
         # Turbo mode: Aggressive settings
         [void]$args.AddRange(@(
-            "-k", "512K"
-            "--min-split-size=512K"
-            "--piece-length=512K"
+            "-k", "1M"
+            "--min-split-size=1M"
+            "--piece-length=1M"
             "--max-connection-per-server=16"
             "--split=16"
             "--max-concurrent-downloads=16"
-            "--connect-timeout=30"
+            "--connect-timeout=15"
             "--timeout=300"
             "--max-tries=0"
             "--retry-wait=1"
@@ -378,9 +378,10 @@ function Get-Aria2Arguments {
             "--max-resume-failure-tries=0"
             "--reuse-uri=true"
             "--max-download-limit=0"
-            "--disk-cache=64M"
+            "--disk-cache=128M"
             "--optimize-concurrent-downloads=true"
             "--stream-piece-selector=inorder"
+            "--bt-max-peers=0"
         ))
     }
     else {
@@ -468,7 +469,7 @@ function Start-DownloadTask {
             Write-Status "Engine: aria2c BALANCED on $($script:Config.Platform)" -Type Running
         }
         
-        $chunkSize = if ($Turbo) { '512K' } else { '1M' }
+        $chunkSize = "1M"  # Both modes now use 1M minimum per aria2c requirements
         Write-Status "Connections: $Connections | Chunk: $chunkSize" -Type Info
         Write-Status "Output: $OutputDir" -Type Info
         Write-Host ""
