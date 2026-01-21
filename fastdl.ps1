@@ -86,7 +86,7 @@ function Initialize-Proxy {
     
     Write-Host ''
     Write-Status "VN proxy available: $($script:DefaultProxy)" -Type Info
-    $useProxy = Read-Choice -Prompt 'Use this proxy?' -Options @('Yes', 'No')
+    $useProxy = Read-Choice -Prompt 'Use this proxy [Vietnam]?' -Options @('Yes', 'No')
     
     if ($useProxy -eq 1) {
         Write-Status "Testing VN proxy ($($script:DefaultProxy))..." -Type Action
