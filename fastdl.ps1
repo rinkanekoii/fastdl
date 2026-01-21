@@ -521,9 +521,9 @@ function Show-Banner {
     $platform = $script:Config.Platform
     $banner = @"
 ╔════════════════════════════════════════╗
-║    FastDL - High-Speed Downloader     ║
+║    FastDL - High-Speed Downloader      ║
 ║         Powered by aria2c v1.37        ║
-║         Platform: $platform$(' ' * (18 - $platform.Length))║
+║         Platform: $platform$(' ' * (18 - $platform.Length))   ║
 ╚════════════════════════════════════════╝
 "@
     Write-Host $banner -ForegroundColor Cyan
