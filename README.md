@@ -31,12 +31,9 @@ No additional dependencies are required.
 
 
 ## Safety
-- Single-file PowerShell script
-- No obfuscation or encoded payloads
-- No hidden downloads or execution
-- No persistence, services, or startup modifications
-- No elevated privileges required
-- aria2c binaries are downloaded only from official sources
+- Fully open-source
+- No obfuscation or hidden execution
+- aria2c binary is downloaded from official sources
 
 Users are encouraged to review the source code before running:
 
