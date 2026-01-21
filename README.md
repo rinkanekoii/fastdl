@@ -19,7 +19,7 @@ FastDL is a PowerShell-based script and works the same across platforms once Pow
 **Run**
 
 ```powershell
-irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v1.0.0/fastdl.ps1 | iex
+irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v2.0.0/fastdl.ps1 | iex
 ```
 
 ---
