@@ -1,312 +1,591 @@
-$script:DataDir = Join-Path $env:APPDATA "FastDL"
-$script:TempDir = Join-Path $env:TEMP "fastdl_session"
-$script:Aria2Path = Join-Path $script:DataDir "aria2c.exe"
-$script:Aria2Url = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
+#Requires -Version 5.1
 
-function Write-Status {
-    param([string]$Msg, [ValidateSet('Info','OK','Warn','Err','Run')]$Type = 'Info')
-    $c = @{ Info='Gray'; OK='Green'; Warn='Yellow'; Err='Red'; Run='Cyan' }
-    $p = @{ Info='[i]'; OK='[+]'; Warn='[!]'; Err='[x]'; Run='[>]' }
-    Write-Host "$($p[$Type]) $Msg" -ForegroundColor $c[$Type]
+<#
+.SYNOPSIS
+    FastDL - High-Speed Download Manager powered by aria2c
+.DESCRIPTION
+    Multi-threaded download manager with turbo mode and batch support
+.NOTES
+    Version: 2.0
+#>
+
+[CmdletBinding()]
+param()
+
+# ============================================================================
+# Configuration & Constants
+# ============================================================================
+
+$script:Config = @{
+    DataDir = Join-Path $env:APPDATA "FastDL"
+    TempDir = Join-Path $env:TEMP "fastdl_session"
+    Aria2Path = Join-Path (Join-Path $env:APPDATA "FastDL") "aria2c.exe"
+    Aria2Version = "1.37.0"
+    Aria2Url = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
+    MaxConnections = 16
+    MinConnections = 1
+    DefaultDownloadDir = Join-Path ([Environment]::GetFolderPath("UserProfile")) "Downloads"
 }
 
-function Format-Size {
-    param([long]$Bytes)
-    if ($Bytes -ge 1GB) { return "{0:N2} GB" -f ($Bytes / 1GB) }
-    if ($Bytes -ge 1MB) { return "{0:N2} MB" -f ($Bytes / 1MB) }
-    if ($Bytes -ge 1KB) { return "{0:N2} KB" -f ($Bytes / 1KB) }
+$script:Presets = @{
+    Balanced = @{
+        Name = "Balanced"
+        Connections = 16
+        ChunkSize = "1M"
+        Turbo = $false
+        Description = "Ổn định, phù hợp hầu hết các server"
+    }
+    Turbo = @{
+        Name = "Turbo"
+        Connections = 16
+        ChunkSize = "512K"
+        Turbo = $true
+        Description = "Tốc độ tối đa, retry tích cực"
+    }
+    Conservative = @{
+        Name = "Conservative"
+        Connections = 8
+        ChunkSize = "2M"
+        Turbo = $false
+        Description = "Ít kết nối, phù hợp server chậm"
+    }
+}
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+function Write-Status {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Message,
+        
+        [ValidateSet('Info','Success','Warning','Error','Running')]
+        [string]$Type = 'Info'
+    )
+    
+    $config = @{
+        Info    = @{ Color = 'Gray';   Prefix = '[i]' }
+        Success = @{ Color = 'Green';  Prefix = '[✓]' }
+        Warning = @{ Color = 'Yellow'; Prefix = '[!]' }
+        Error   = @{ Color = 'Red';    Prefix = '[✗]' }
+        Running = @{ Color = 'Cyan';   Prefix = '[→]' }
+    }
+    
+    $c = $config[$Type]
+    Write-Host "$($c.Prefix) $Message" -ForegroundColor $c.Color
+}
+
+function Format-FileSize {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][long]$Bytes)
+    
+    $sizes = @(
+        @{ Threshold = 1TB; Format = "{0:N2} TB"; Divisor = 1TB }
+        @{ Threshold = 1GB; Format = "{0:N2} GB"; Divisor = 1GB }
+        @{ Threshold = 1MB; Format = "{0:N2} MB"; Divisor = 1MB }
+        @{ Threshold = 1KB; Format = "{0:N2} KB"; Divisor = 1KB }
+    )
+    
+    foreach ($size in $sizes) {
+        if ($Bytes -ge $size.Threshold) {
+            return $size.Format -f ($Bytes / $size.Divisor)
+        }
+    }
     return "$Bytes B"
 }
 
-function Ensure-Dirs {
-    @($script:DataDir, $script:TempDir) | ForEach-Object {
-        if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
+function Format-Duration {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][TimeSpan]$TimeSpan)
+    
+    if ($TimeSpan.TotalHours -ge 1) {
+        return "{0:D2}:{1:D2}:{2:D2}" -f $TimeSpan.Hours, $TimeSpan.Minutes, $TimeSpan.Seconds
     }
+    return "{0:D2}:{1:D2}" -f $TimeSpan.Minutes, $TimeSpan.Seconds
 }
 
-function Initialize-Aria2 {
-    if (Test-Path $script:Aria2Path) { return $true }
-    Ensure-Dirs
-    Write-Status "Downloading aria2c (one-time setup)..." Run
-    $zipPath = Join-Path $script:TempDir "aria2.zip"
-    $extractPath = Join-Path $script:TempDir "aria2-extract"
+function Test-Url {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Url)
+    
+    return $Url -match '^https?://.+\..+'
+}
+
+function Initialize-Environment {
+    [CmdletBinding()]
+    param()
+    
     try {
-        $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $script:Aria2Url -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
-        if (Test-Path $extractPath) { Remove-Item $extractPath -Recurse -Force }
-        Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-        $exe = Get-ChildItem -Path $extractPath -Recurse -Filter "aria2c.exe" | Select-Object -First 1
-        if ($exe) { 
-            Copy-Item $exe.FullName -Destination $script:Aria2Path -Force
-            Write-Status "aria2c ready" OK 
-        } else { 
-            Write-Status "aria2c.exe not found in archive" Err
-            return $false 
+        foreach ($dir in @($script:Config.DataDir, $script:Config.TempDir)) {
+            if (-not (Test-Path $dir)) {
+                New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null
+            }
         }
-        Remove-Item $zipPath,$extractPath -Recurse -Force -EA SilentlyContinue
         return $true
-    } catch { 
-        Write-Status "Failed to download aria2: $_" Err
-        return $false 
     }
-}
-
-function Start-Download {
-    param(
-        [string]$Url,
-        [int]$Connections = 16,
-        [string]$OutputDir,
-        [string]$FileName,
-        [switch]$Turbo
-    )
-    
-    if (-not (Initialize-Aria2)) { return $false }
-    
-    $Connections = [Math]::Max(1, [Math]::Min(16, $Connections))
-    if (-not $OutputDir) { 
-        $OutputDir = Join-Path ([Environment]::GetFolderPath("UserProfile")) "Downloads" 
-    }
-    if (-not (Test-Path $OutputDir)) { 
-        New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null 
-    }
-    
-    Write-Host ""
-    if ($Turbo) {
-        Write-Status "Engine: aria2c TURBO MODE" Run
-        Write-Status "Connections: $Connections | Chunk: 512K | Aggressive retry" Info
-    } else {
-        Write-Status "Engine: aria2c" Info
-        Write-Status "Connections: $Connections | Chunk: 1M" Info
-    }
-    Write-Status "Output: $OutputDir" Info
-    Write-Host ""
-    
-    # Base arguments - optimized for large files and slow servers
-    $aria2Args = @(
-        "`"$Url`"",
-        "-d", "`"$OutputDir`"",
-        "-x", $Connections,
-        "-s", $Connections,
-        "-j", "10",
-        "-k", "1M",
-        "--min-split-size=1M",
-        "--piece-length=1M",
-        "--file-allocation=none",
-        "--console-log-level=notice",
-        "--summary-interval=2",
-        "-c",
-        "--auto-file-renaming=false",
-        "--allow-overwrite=true",
-        "--check-certificate=false",
-        "--remote-time=true"
-    )
-    
-    if ($Turbo) {
-        # TURBO MODE: Aggressive settings for maximum speed
-        $aria2Args += @(
-            "--max-connection-per-server=16",
-            "--split=16",
-            "--min-split-size=512K",
-            "--piece-length=512K",
-            "--max-concurrent-downloads=16",
-            "--connect-timeout=30",
-            "--timeout=300",
-            "--max-tries=0",
-            "--retry-wait=1",
-            "--max-file-not-found=5",
-            "--uri-selector=feedback",
-            "--max-resume-failure-tries=0",
-            "--always-resume=true",
-            "--continue=true",
-            "--enable-http-keep-alive=true",
-            "--http-accept-gzip=true",
-            "--reuse-uri=true",
-            "--max-download-limit=0",
-            "--disk-cache=64M",
-            "--optimize-concurrent-downloads=true",
-            "--stream-piece-selector=inorder"
-        )
-    } else {
-        # BALANCED MODE: Stable settings for reliability
-        $aria2Args += @(
-            "--max-connection-per-server=16",
-            "--connect-timeout=20",
-            "--timeout=180",
-            "--max-tries=10",
-            "--retry-wait=5",
-            "--max-file-not-found=5",
-            "--uri-selector=adaptive",
-            "--max-resume-failure-tries=10",
-            "--always-resume=true",
-            "--continue=true",
-            "--enable-http-keep-alive=true",
-            "--http-accept-gzip=true",
-            "--disk-cache=32M",
-            "--lowest-speed-limit=0"
-        )
-    }
-    
-    if ($FileName) { 
-        $aria2Args += @("-o", "`"$FileName`"") 
-    }
-    
-    $startTime = Get-Date
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $script:Aria2Path
-    $psi.Arguments = $aria2Args -join " "
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $false
-    
-    $process = [System.Diagnostics.Process]::Start($psi)
-    $process.WaitForExit()
-    $elapsed = (Get-Date) - $startTime
-    
-    if ($process.ExitCode -eq 0) {
-        Write-Host ""
-        Write-Status "Download complete! Time: $([Math]::Round($elapsed.TotalSeconds,1))s" OK
-        return $true
-    } else {
-        Write-Status "Download failed (exit code: $($process.ExitCode))" Err
+    catch {
+        Write-Status "Không thể tạo thư mục: $_" -Type Error
         return $false
     }
 }
 
+# ============================================================================
+# Aria2 Management
+# ============================================================================
+
+function Install-Aria2 {
+    [CmdletBinding()]
+    param()
+    
+    if (Test-Path $script:Config.Aria2Path) {
+        return $true
+    }
+    
+    if (-not (Initialize-Environment)) {
+        return $false
+    }
+    
+    Write-Status "Đang tải aria2c (chỉ một lần)..." -Type Running
+    
+    $zipPath = Join-Path $script:Config.TempDir "aria2.zip"
+    $extractPath = Join-Path $script:Config.TempDir "aria2-extract"
+    
+    try {
+        # Download with progress
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $script:Config.Aria2Url -OutFile $zipPath `
+            -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+        
+        # Extract
+        if (Test-Path $extractPath) {
+            Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force -ErrorAction Stop
+        
+        # Find and copy executable
+        $exe = Get-ChildItem -Path $extractPath -Recurse -Filter "aria2c.exe" -ErrorAction Stop | 
+               Select-Object -First 1
+        
+        if (-not $exe) {
+            throw "Không tìm thấy aria2c.exe trong archive"
+        }
+        
+        Copy-Item $exe.FullName -Destination $script:Config.Aria2Path -Force -ErrorAction Stop
+        Write-Status "aria2c đã sẵn sàng" -Type Success
+        
+        # Cleanup
+        Remove-Item $zipPath, $extractPath -Recurse -Force -ErrorAction SilentlyContinue
+        
+        return $true
+    }
+    catch {
+        Write-Status "Lỗi tải aria2: $_" -Type Error
+        return $false
+    }
+}
+
+function Get-Aria2Arguments {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Url,
+        [Parameter(Mandatory)][string]$OutputDir,
+        [int]$Connections = 16,
+        [switch]$Turbo,
+        [string]$FileName
+    )
+    
+    $args = [System.Collections.Generic.List[string]]::new()
+    
+    # Core arguments
+    $args.AddRange(@(
+        "`"$Url`""
+        "-d", "`"$OutputDir`""
+        "-x", $Connections
+        "-s", $Connections
+        "-j", "10"
+        "-c"
+        "--file-allocation=none"
+        "--console-log-level=notice"
+        "--summary-interval=1"
+        "--auto-file-renaming=false"
+        "--allow-overwrite=true"
+        "--check-certificate=false"
+        "--remote-time=true"
+        "--enable-http-keep-alive=true"
+        "--http-accept-gzip=true"
+        "--always-resume=true"
+        "--continue=true"
+    ))
+    
+    if ($Turbo) {
+        # Turbo mode: Aggressive settings
+        $args.AddRange(@(
+            "-k", "512K"
+            "--min-split-size=512K"
+            "--piece-length=512K"
+            "--max-connection-per-server=16"
+            "--split=16"
+            "--max-concurrent-downloads=16"
+            "--connect-timeout=30"
+            "--timeout=300"
+            "--max-tries=0"
+            "--retry-wait=1"
+            "--max-file-not-found=5"
+            "--uri-selector=feedback"
+            "--max-resume-failure-tries=0"
+            "--reuse-uri=true"
+            "--max-download-limit=0"
+            "--disk-cache=64M"
+            "--optimize-concurrent-downloads=true"
+            "--stream-piece-selector=inorder"
+        ))
+    }
+    else {
+        # Balanced mode: Stable settings
+        $args.AddRange(@(
+            "-k", "1M"
+            "--min-split-size=1M"
+            "--piece-length=1M"
+            "--max-connection-per-server=16"
+            "--connect-timeout=20"
+            "--timeout=180"
+            "--max-tries=10"
+            "--retry-wait=5"
+            "--max-file-not-found=5"
+            "--uri-selector=adaptive"
+            "--max-resume-failure-tries=10"
+            "--disk-cache=32M"
+            "--lowest-speed-limit=0"
+        ))
+    }
+    
+    if ($FileName) {
+        $args.AddRange(@("-o", "`"$FileName`""))
+    }
+    
+    return $args -join " "
+}
+
+# ============================================================================
+# Download Functions
+# ============================================================================
+
+function Start-DownloadTask {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Url,
+        
+        [int]$Connections = 16,
+        
+        [string]$OutputDir,
+        
+        [string]$FileName,
+        
+        [switch]$Turbo,
+        
+        [switch]$Quiet
+    )
+    
+    # Validate
+    if (-not (Test-Url $Url)) {
+        Write-Status "URL không hợp lệ: $Url" -Type Error
+        return $false
+    }
+    
+    if (-not (Install-Aria2)) {
+        return $false
+    }
+    
+    # Setup directories
+    if (-not $OutputDir) {
+        $OutputDir = $script:Config.DefaultDownloadDir
+    }
+    
+    if (-not (Test-Path $OutputDir)) {
+        try {
+            New-Item -ItemType Directory -Path $OutputDir -Force -ErrorAction Stop | Out-Null
+        }
+        catch {
+            Write-Status "Không thể tạo thư mục đích: $_" -Type Error
+            return $false
+        }
+    }
+    
+    # Normalize connections
+    $Connections = [Math]::Max($script:Config.MinConnections, 
+                              [Math]::Min($script:Config.MaxConnections, $Connections))
+    
+    # Display info
+    if (-not $Quiet) {
+        Write-Host ""
+        Write-Status "Engine: aria2c $($Turbo ? 'TURBO' : 'BALANCED')" -Type Running
+        Write-Status "Kết nối: $Connections | Chunk: $($Turbo ? '512K' : '1M')" -Type Info
+        Write-Status "Đích: $OutputDir" -Type Info
+        Write-Host ""
+    }
+    
+    # Build arguments
+    $arguments = Get-Aria2Arguments -Url $Url -OutputDir $OutputDir `
+        -Connections $Connections -Turbo:$Turbo -FileName $FileName
+    
+    # Execute
+    $startTime = Get-Date
+    
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $script:Config.Aria2Path
+        $psi.Arguments = $arguments
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $false
+        
+        $process = [System.Diagnostics.Process]::Start($psi)
+        $process.WaitForExit()
+        
+        $elapsed = (Get-Date) - $startTime
+        
+        if ($process.ExitCode -eq 0) {
+            if (-not $Quiet) {
+                Write-Host ""
+                Write-Status "Hoàn thành! Thời gian: $(Format-Duration $elapsed)" -Type Success
+            }
+            return $true
+        }
+        else {
+            Write-Status "Tải thất bại (exit code: $($process.ExitCode))" -Type Error
+            return $false
+        }
+    }
+    catch {
+        Write-Status "Lỗi: $_" -Type Error
+        return $false
+    }
+}
+
+# ============================================================================
+# UI Functions
+# ============================================================================
+
 function Show-Banner {
     Clear-Host
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "  FastDL - High-Speed Downloader" -ForegroundColor Cyan
-    Write-Host "  Powered by aria2c" -ForegroundColor DarkGray
-    Write-Host "========================================" -ForegroundColor Cyan
+    $banner = @"
+╔════════════════════════════════════════╗
+║     FastDL - Trình tải tốc độ cao     ║
+║         Powered by aria2c v1.37        ║
+╚════════════════════════════════════════╝
+"@
+    Write-Host $banner -ForegroundColor Cyan
     Write-Host ""
 }
 
 function Read-Choice {
-    param([string]$Prompt, [string[]]$Options)
-    Write-Host "$Prompt" -ForegroundColor Yellow
-    for ($i = 0; $i -lt $Options.Count; $i++) { 
-        Write-Host "  [$($i+1)] $($Options[$i])" 
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Prompt,
+        
+        [Parameter(Mandatory)]
+        [string[]]$Options,
+        
+        [switch]$AllowQuit
+    )
+    
+    Write-Host $Prompt -ForegroundColor Yellow
+    Write-Host ""
+    
+    for ($i = 0; $i -lt $Options.Count; $i++) {
+        Write-Host "  [$($i + 1)] $($Options[$i])"
     }
-    Write-Host "  [Q] Quit" -ForegroundColor DarkGray
+    
+    if ($AllowQuit) {
+        Write-Host "  [Q] Thoát" -ForegroundColor DarkGray
+    }
+    
+    Write-Host ""
+    
     while ($true) {
-        $r = Read-Host ">"
-        if ($r -match '^[Qq]$') { return -1 }
-        if ($r -match '^\d+$' -and [int]$r -ge 1 -and [int]$r -le $Options.Count) { 
-            return [int]$r 
+        $input = Read-Host "Chọn"
+        
+        if ($AllowQuit -and $input -match '^[Qq]$') {
+            return -1
         }
-        Write-Host "Invalid choice" -ForegroundColor Red
+        
+        if ($input -match '^\d+$') {
+            $num = [int]$input
+            if ($num -ge 1 -and $num -le $Options.Count) {
+                return $num
+            }
+        }
+        
+        Write-Host "Lựa chọn không hợp lệ" -ForegroundColor Red
     }
 }
 
-function Menu-SingleDownload {
-    Show-Banner
-    Write-Host "=== Single Download ===" -ForegroundColor Yellow
+function Read-Urls {
+    [CmdletBinding()]
+    param()
+    
+    Write-Host "Nhập URL (từng dòng, Enter 2 lần để kết thúc):" -ForegroundColor Gray
     Write-Host ""
     
+    $urls = [System.Collections.Generic.List[string]]::new()
+    $lineNum = 1
+    
+    while ($true) {
+        $input = Read-Host "URL $lineNum"
+        
+        if ([string]::IsNullOrWhiteSpace($input)) {
+            break
+        }
+        
+        if (Test-Url $input) {
+            $urls.Add($input.Trim())
+            $lineNum++
+        }
+        else {
+            Write-Status "URL không hợp lệ, bỏ qua" -Type Warning
+        }
+    }
+    
+    return $urls.ToArray()
+}
+
+# ============================================================================
+# Menu Functions
+# ============================================================================
+
+function Show-SingleDownloadMenu {
+    Show-Banner
+    Write-Host "═══ Tải đơn ═══" -ForegroundColor Yellow
+    Write-Host ""
+    
+    # Get URL
     $url = Read-Host "URL"
-    if (-not $url) { 
-        Write-Status "URL is required" Warn
-        Read-Host "`nPress Enter to continue"
-        return 
+    if ([string]::IsNullOrWhiteSpace($url) -or -not (Test-Url $url)) {
+        Write-Status "URL không hợp lệ" -Type Warning
+        Read-Host "`nEnter để tiếp tục"
+        return
     }
     
-    $modeChoice = Read-Choice "Download Mode" @(
-        "Balanced (16 conn, stable)",
-        "Turbo (16 conn, max speed, aggressive retry)",
-        "Custom"
-    )
-    if ($modeChoice -eq -1) { return }
+    # Select preset
+    $presetOptions = $script:Presets.Keys | ForEach-Object {
+        $p = $script:Presets[$_]
+        "$($p.Name) - $($p.Description)"
+    }
+    $presetOptions += "Tùy chỉnh"
     
+    $choice = Read-Choice -Prompt "Chế độ tải" -Options $presetOptions -AllowQuit
+    if ($choice -eq -1) { return }
+    
+    $preset = $null
+    $connections = 16
     $turbo = $false
-    $conns = 16
     
-    switch ($modeChoice) {
-        1 { $conns = 16; $turbo = $false }
-        2 { $conns = 16; $turbo = $true }
-        3 { 
-            $custom = Read-Host "Enter connections (1-16)"
-            $conns = [Math]::Max(1, [Math]::Min(16, [int]$custom))
-            $turboChoice = Read-Choice "Use Turbo settings?" @("No (stable)","Yes (aggressive)")
-            $turbo = ($turboChoice -eq 2)
-        }
+    if ($choice -le $script:Presets.Count) {
+        $presetKey = $script:Presets.Keys[$choice - 1]
+        $preset = $script:Presets[$presetKey]
+        $connections = $preset.Connections
+        $turbo = $preset.Turbo
+    }
+    else {
+        # Custom settings
+        $customConn = Read-Host "Số kết nối (1-16)"
+        $connections = [Math]::Max(1, [Math]::Min(16, [int]$customConn))
+        
+        $turboChoice = Read-Choice -Prompt "Dùng Turbo?" -Options @("Không", "Có")
+        $turbo = ($turboChoice -eq 2)
     }
     
-    Start-Download -Url $url -Connections $conns -Turbo:$turbo
-    Read-Host "`nPress Enter to continue"
+    # Download
+    Start-DownloadTask -Url $url -Connections $connections -Turbo:$turbo
+    
+    Read-Host "`nEnter để tiếp tục"
 }
 
-function Menu-MultiDownload {
+function Show-MultiDownloadMenu {
     Show-Banner
-    Write-Host "=== Multiple Downloads ===" -ForegroundColor Yellow
-    Write-Host "Enter URLs one per line (empty line to finish):" -ForegroundColor Gray
+    Write-Host "═══ Tải nhiều file ═══" -ForegroundColor Yellow
     Write-Host ""
     
-    $urls = @()
-    $i = 1
-    while ($true) {
-        $u = Read-Host "URL $i"
-        if (-not $u) { break }
-        $urls += $u
-        $i++
+    $urls = Read-Urls
+    
+    if ($urls.Count -eq 0) {
+        Write-Status "Không có URL nào" -Type Warning
+        Read-Host "`nEnter để tiếp tục"
+        return
     }
-    
-    if ($urls.Count -eq 0) { 
-        Write-Status "No URLs entered" Warn
-        Read-Host "`nPress Enter to continue"
-        return 
-    }
-    
-    $modeChoice = Read-Choice "Download Mode for all files" @(
-        "Balanced (16 conn, stable)",
-        "Turbo (16 conn, max speed)"
-    )
-    if ($modeChoice -eq -1) { return }
-    
-    $turbo = ($modeChoice -eq 2)
-    $conns = 16
     
     Write-Host ""
-    Write-Status "Starting download of $($urls.Count) file(s)..." Run
+    Write-Status "Đã nhập $($urls.Count) URL" -Type Info
     
-    $success = 0
-    $failed = 0
+    # Select mode
+    $choice = Read-Choice -Prompt "Chế độ cho tất cả" `
+        -Options @("Balanced - Ổn định", "Turbo - Tốc độ tối đa") -AllowQuit
+    
+    if ($choice -eq -1) { return }
+    
+    $turbo = ($choice -eq 2)
+    
+    # Download all
+    Write-Host ""
+    Write-Status "Bắt đầu tải $($urls.Count) file..." -Type Running
+    
+    $stats = @{ Success = 0; Failed = 0 }
     
     foreach ($url in $urls) {
-        Write-Host "`n--- Downloading: $url ---" -ForegroundColor DarkCyan
-        if (Start-Download -Url $url -Connections $conns -Turbo:$turbo) {
-            $success++
-        } else {
-            $failed++
+        Write-Host "`n$('─' * 60)" -ForegroundColor DarkCyan
+        Write-Host "Đang tải: $url" -ForegroundColor Cyan
+        Write-Host "$('─' * 60)" -ForegroundColor DarkCyan
+        
+        if (Start-DownloadTask -Url $url -Connections 16 -Turbo:$turbo) {
+            $stats.Success++
+        }
+        else {
+            $stats.Failed++
         }
     }
     
+    # Summary
     Write-Host ""
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Status "Summary: $success succeeded, $failed failed" Info
-    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "╔════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║            KẾT QUẢ TỔNG QUAN           ║" -ForegroundColor Cyan
+    Write-Host "╠════════════════════════════════════════╣" -ForegroundColor Cyan
+    Write-Host ("║  Thành công: {0,-25} ║" -f $stats.Success) -ForegroundColor Green
+    Write-Host ("║  Thất bại:   {0,-25} ║" -f $stats.Failed) -ForegroundColor $(if ($stats.Failed -gt 0) { 'Red' } else { 'Gray' })
+    Write-Host "╚════════════════════════════════════════╝" -ForegroundColor Cyan
     
-    Read-Host "`nPress Enter to continue"
+    Read-Host "`nEnter để tiếp tục"
 }
 
 function Show-MainMenu {
     while ($true) {
         Show-Banner
-        $choice = Read-Choice "Main Menu" @(
-            "Single Download",
-            "Multiple Downloads",
-            "Exit"
-        )
+        
+        $choice = Read-Choice -Prompt "Menu chính" `
+            -Options @("Tải đơn", "Tải nhiều file", "Thoát") `
+            -AllowQuit
         
         switch ($choice) {
-            1 { Menu-SingleDownload }
-            2 { Menu-MultiDownload }
-            3 { return }
-            -1 { return }
+            1 { Show-SingleDownloadMenu }
+            2 { Show-MultiDownloadMenu }
+            { $_ -eq 3 -or $_ -eq -1 } { return }
         }
     }
 }
 
-# Main execution
-Ensure-Dirs
+# ============================================================================
+# Main Entry Point
+# ============================================================================
+
+if (-not (Initialize-Environment)) {
+    Write-Status "Không thể khởi tạo môi trường" -Type Error
+    exit 1
+}
+
 Show-MainMenu
+
 Write-Host ""
-Write-Status "Goodbye!" OK
+Write-Status "Tạm biệt!" -Type Success
+Write-Host ""
