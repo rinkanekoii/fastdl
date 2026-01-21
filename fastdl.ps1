@@ -1,6 +1,7 @@
 ﻿#!/usr/bin/env pwsh
 #Requires -Version 5.1
 
+& {
 [CmdletBinding()]
 param(
     [string]$Url,
@@ -717,3 +718,5 @@ finally {
 
 Write-Host ''
 Write-Status 'Goodbye!' -Type Success
+
+} @args
