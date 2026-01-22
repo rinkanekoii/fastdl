@@ -587,9 +587,9 @@ function Start-Download {
     }
     else {
         $aria2Args += @(
-            '--max-tries=10'
+            '--max-tries=8'
             '--retry-wait=2'
-            '--connect-timeout=15'
+            '--connect-timeout=12'
             '--timeout=600'
         )
     }
