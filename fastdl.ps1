@@ -1,18 +1,16 @@
-﻿#!/usr/bin/env pwsh
+<# 
+.SYNOPSIS
+    FastDL - High-speed download manager using aria2
+.DESCRIPTION
+    A PowerShell script for fast file downloads with proxy support
+#>
 #Requires -Version 5.1
 
+& {
 param(
     [string]$Url,
     [switch]$Fast,
     [switch]$NoProxy
-)
-
-& {
-
-param(
-    [string]$Url = $script:Url,
-    [switch]$Fast = $script:Fast,
-    [switch]$NoProxy = $script:NoProxy
 )
 
 # ============================================================================
@@ -27,7 +25,8 @@ $script:OS = if ($IsWindows -or $env:OS -match 'Windows') { 'Windows' }
 $script:TempDir = Join-Path ([System.IO.Path]::GetTempPath()) "fastdl_$PID"
 $script:Aria2 = $null
 $script:ProxyListUrl = 'https://raw.githubusercontent.com/rinkanekoii/fastdl/main/proxies.json'
-$script:LocalProxyFile = Join-Path $PSScriptRoot 'proxies.json'
+$script:ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.MyCommand.Path) { Split-Path $MyInvocation.MyCommand.Path } else { $PWD.Path }
+$script:LocalProxyFile = Join-Path $script:ScriptRoot 'proxies.json'
 $script:Proxy = ''
 $script:ProxyTestConfig = @{
     Urls = @(
