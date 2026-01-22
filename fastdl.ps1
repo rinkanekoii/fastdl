@@ -33,25 +33,40 @@ $script:DownloadDir = if ($script:OS -eq 'Windows') {
 
 $script:Presets = @{
     Normal = @{ 
-        Label = 'Normal (16 conn, reliable)'
-        Desc  = 'Stable for most servers'
+        Label = 'Normal (16 conn, stable)'
+        Desc  = 'Reliable for all servers'
         Connections = 16
         Chunk = '1M'
-        Aggressive = $false
+        ConnectTimeout = 15
+        Timeout = 600
+        MaxTries = 10
+        RetryWait = 2
+        DiskCache = '64M'
+        SocketBuffer = '8M'
     }
-    Turbo = @{ 
-        Label = 'Turbo (16 conn, max optimization)'
-        Desc  = 'Maximum speed, aggressive settings'
+    Fast = @{ 
+        Label = 'Fast (16 conn, optimized cache)'
+        Desc  = 'Better performance, safe timeouts'
         Connections = 16
-        Chunk = '512K'
-        Aggressive = $true
+        Chunk = '1M'
+        ConnectTimeout = 15
+        Timeout = 600
+        MaxTries = 10
+        RetryWait = 2
+        DiskCache = '256M'
+        SocketBuffer = '16M'
     }
-    Ultra = @{
-        Label = 'Ultra (16 conn, extreme settings)'
-        Desc  = 'Absolute maximum, may fail on some servers'
+    Turbo = @{
+        Label = 'Turbo (16 conn, max cache)'
+        Desc  = 'Maximum speed optimization'
         Connections = 16
-        Chunk = '256K'
-        Aggressive = $true
+        Chunk = '1M'
+        ConnectTimeout = 15
+        Timeout = 600
+        MaxTries = 10
+        RetryWait = 2
+        DiskCache = '512M'
+        SocketBuffer = '32M'
     }
 }
 
@@ -408,7 +423,12 @@ function Start-Download {
         [Parameter(Mandatory)][string]$Url,
         [int]$Connections = 16,
         [string]$Chunk = '1M',
-        [switch]$Aggressive
+        [int]$ConnectTimeout = 15,
+        [int]$Timeout = 600,
+        [int]$MaxTries = 10,
+        [int]$RetryWait = 2,
+        [string]$DiskCache = '64M',
+        [string]$SocketBuffer = '8M'
     )
 
     if (-not (Test-Url $Url)) {
@@ -463,53 +483,21 @@ function Start-Download {
         '--http-accept-gzip=true'
         '--console-log-level=notice'
         '--download-result=full'
-        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        "--max-tries=$MaxTries"
+        "--retry-wait=$RetryWait"
+        "--connect-timeout=$ConnectTimeout"
+        "--timeout=$Timeout"
+        "--disk-cache=$DiskCache"
+        "--socket-recv-buffer-size=$SocketBuffer"
     )
-
-    if ($Aggressive) {
-        $aria2Args += @(
-            '--max-tries=0'
-            '--retry-wait=0'
-            '--connect-timeout=3'
-            '--timeout=180'
-            '--max-file-not-found=3'
-            '--stream-piece-selector=inorder'
-            '--uri-selector=adaptive'
-            '--disk-cache=1024M'
-            '--piece-length=1M'
-            '--optimize-concurrent-downloads=true'
-            '--async-dns=true'
-            '--max-download-limit=0'
-            '--lowest-speed-limit=0'
-            '--socket-recv-buffer-size=32M'
-            '--no-netrc=true'
-            '--always-resume=true'
-            '--max-resume-failure-tries=0'
-            '--http-no-cache=true'
-            '--enable-mmap=true'
-            '--conditional-get=true'
-            '--reuse-uri=true'
-            '--max-tries=5'
-            '--retry-wait=1'
-        )
-    }
-    else {
-        $aria2Args += @(
-            '--max-tries=10'
-            '--retry-wait=2'
-            '--connect-timeout=15'
-            '--timeout=600'
-            '--disk-cache=512M'
-        )
-    }
 
     if ($script:Proxy) {
         $aria2Args += "--all-proxy=$($script:Proxy)"
     }
 
     Write-Host ''
-    $mode = if ($Aggressive) { 'AGGRESSIVE' } else { 'NORMAL' }
-    Write-Status "$conn connections | Chunk: $Chunk | Mode: $mode" -Type Action
+    Write-Status "$conn connections | Chunk: $Chunk | Cache: $DiskCache | Buffer: $SocketBuffer" -Type Action
     if ($script:Proxy) { Write-Status "Proxy: $($script:Proxy)" -Type Info }
     Write-Status "Save to: $script:DownloadDir\$fileName" -Type Info
     Write-Host ''
@@ -680,7 +668,7 @@ function Show-Banner {
     Clear-Host
     Write-Host '=====================================' -ForegroundColor Cyan
     Write-Host '  FastDL - High Speed Downloader    ' -ForegroundColor Cyan
-    Write-Host "  OS: $($script:OS) | Optimized" -ForegroundColor DarkGray
+    Write-Host "  OS: $($script:OS)" -ForegroundColor DarkGray
     Write-Host '=====================================' -ForegroundColor Cyan
     if ($script:Proxy) {
         Write-Host "  Proxy: $($script:Proxy)" -ForegroundColor Green
@@ -744,15 +732,15 @@ function Menu-Download {
     Write-Host ''
     $choice = Read-Choice -Prompt 'Download Mode' -Options @(
         "$($script:Presets.Normal.Label) - $($script:Presets.Normal.Desc)",
-        "$($script:Presets.Turbo.Label) - $($script:Presets.Turbo.Desc)",
-        "$($script:Presets.Ultra.Label) - $($script:Presets.Ultra.Desc)"
+        "$($script:Presets.Fast.Label) - $($script:Presets.Fast.Desc)",
+        "$($script:Presets.Turbo.Label) - $($script:Presets.Turbo.Desc)"
     )
     if ($choice -eq -1) { return }
 
     $preset = switch ($choice) {
         1 { $script:Presets.Normal }
-        2 { $script:Presets.Turbo }
-        3 { $script:Presets.Ultra }
+        2 { $script:Presets.Fast }
+        3 { $script:Presets.Turbo }
     }
 
     $ok = 0; $fail = 0
@@ -761,7 +749,7 @@ function Menu-Download {
             Write-Host "`n$('-' * 50)" -ForegroundColor DarkCyan
             Write-Host $u -ForegroundColor Cyan
         }
-        if (Start-Download -Url $u -Connections $preset.Connections -Chunk $preset.Chunk -Aggressive:$preset.Aggressive) { $ok++ }
+        if (Start-Download -Url $u -Connections $preset.Connections -Chunk $preset.Chunk -ConnectTimeout $preset.ConnectTimeout -Timeout $preset.Timeout -MaxTries $preset.MaxTries -RetryWait $preset.RetryWait -DiskCache $preset.DiskCache -SocketBuffer $preset.SocketBuffer) { $ok++ }
         else { $fail++ }
     }
 
@@ -835,8 +823,8 @@ if ($Url) {
         Write-Status "OS: $($script:OS)" -Type Info
         Write-Status "Output: $script:DownloadDir" -Type Info
         if (-not $NoProxy) { Initialize-Proxy }
-        $preset = if ($Fast) { $script:Presets.Turbo } else { $script:Presets.Normal }
-        Start-Download -Url $Url -Connections $preset.Connections -Chunk $preset.Chunk -Aggressive:$preset.Aggressive | Out-Null
+        $preset = if ($Fast) { $script:Presets.Fast } else { $script:Presets.Normal }
+        Start-Download -Url $Url -Connections $preset.Connections -Chunk $preset.Chunk -ConnectTimeout $preset.ConnectTimeout -Timeout $preset.Timeout -MaxTries $preset.MaxTries -RetryWait $preset.RetryWait -DiskCache $preset.DiskCache -SocketBuffer $preset.SocketBuffer | Out-Null
     }
     catch {
         Write-Status "Error: $_" -Type Error
