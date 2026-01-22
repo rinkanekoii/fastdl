@@ -39,6 +39,8 @@ $script:Presets = @{
         Chunk = '1M'
         DiskCache = '64M'
         SocketBuffer = '8M'
+        ConnectTimeout = 15
+        Timeout = 120
     }
     Fast = @{ 
         Label = 'Fast (optimized)'
@@ -47,6 +49,18 @@ $script:Presets = @{
         Chunk = '1M'
         DiskCache = '256M'
         SocketBuffer = '16M'
+        ConnectTimeout = 15
+        Timeout = 120
+    }
+    ProxySafe = @{
+        Label = 'Proxy-Safe (single connection)'
+        Desc  = 'For unreliable proxies, slower but works'
+        Connections = 1
+        Chunk = '1M'
+        DiskCache = '32M'
+        SocketBuffer = '4M'
+        ConnectTimeout = 30
+        Timeout = 180
     }
 }
 
@@ -404,7 +418,9 @@ function Start-Download {
         [int]$Connections = 16,
         [string]$Chunk = '1M',
         [string]$DiskCache = '64M',
-        [string]$SocketBuffer = '8M'
+        [string]$SocketBuffer = '8M',
+        [int]$ConnectTimeout = 15,
+        [int]$Timeout = 120
     )
 
     if (-not (Test-Url $Url)) {
@@ -462,8 +478,8 @@ function Start-Download {
         '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         '--max-tries=10'
         '--retry-wait=2'
-        '--connect-timeout=15'
-        '--timeout=600'
+        "--connect-timeout=$ConnectTimeout"
+        "--timeout=$Timeout"
         "--disk-cache=$DiskCache"
         "--socket-recv-buffer-size=$SocketBuffer"
     )
@@ -473,7 +489,8 @@ function Start-Download {
     }
 
     Write-Host ''
-    Write-Status "$conn connections | Chunk: $Chunk | Cache: $DiskCache | Buffer: $SocketBuffer" -Type Action
+    Write-Status "$conn connections | Chunk: $Chunk | Timeout: ${ConnectTimeout}s/${Timeout}s" -Type Action
+    Write-Status "Cache: $DiskCache | Buffer: $SocketBuffer" -Type Info
     if ($script:Proxy) { Write-Status "Proxy: $($script:Proxy)" -Type Info }
     Write-Status "Save to: $script:DownloadDir\$fileName" -Type Info
     Write-Host ''
@@ -708,11 +725,16 @@ function Menu-Download {
     Write-Host ''
     $choice = Read-Choice -Prompt 'Download Mode' -Options @(
         "$($script:Presets.Normal.Label) - $($script:Presets.Normal.Desc)",
-        "$($script:Presets.Fast.Label) - $($script:Presets.Fast.Desc)"
+        "$($script:Presets.Fast.Label) - $($script:Presets.Fast.Desc)",
+        "$($script:Presets.ProxySafe.Label) - $($script:Presets.ProxySafe.Desc)"
     )
     if ($choice -eq -1) { return }
 
-    $preset = if ($choice -eq 1) { $script:Presets.Normal } else { $script:Presets.Fast }
+    $preset = switch ($choice) {
+        1 { $script:Presets.Normal }
+        2 { $script:Presets.Fast }
+        3 { $script:Presets.ProxySafe }
+    }
 
     $ok = 0; $fail = 0
     foreach ($u in $urls) {
@@ -720,7 +742,7 @@ function Menu-Download {
             Write-Host "`n$('-' * 50)" -ForegroundColor DarkCyan
             Write-Host $u -ForegroundColor Cyan
         }
-        if (Start-Download -Url $u -Connections $preset.Connections -Chunk $preset.Chunk -DiskCache $preset.DiskCache -SocketBuffer $preset.SocketBuffer) { $ok++ }
+        if (Start-Download -Url $u -Connections $preset.Connections -Chunk $preset.Chunk -DiskCache $preset.DiskCache -SocketBuffer $preset.SocketBuffer -ConnectTimeout $preset.ConnectTimeout -Timeout $preset.Timeout) { $ok++ }
         else { $fail++ }
     }
 
@@ -795,7 +817,7 @@ if ($Url) {
         Write-Status "Output: $script:DownloadDir" -Type Info
         if (-not $NoProxy) { Initialize-Proxy }
         $preset = if ($Fast) { $script:Presets.Fast } else { $script:Presets.Normal }
-        Start-Download -Url $Url -Connections $preset.Connections -Chunk $preset.Chunk -DiskCache $preset.DiskCache -SocketBuffer $preset.SocketBuffer | Out-Null
+        Start-Download -Url $Url -Connections $preset.Connections -Chunk $preset.Chunk -DiskCache $preset.DiskCache -SocketBuffer $preset.SocketBuffer -ConnectTimeout $preset.ConnectTimeout -Timeout $preset.Timeout | Out-Null
     }
     catch {
         Write-Status "Error: $_" -Type Error
