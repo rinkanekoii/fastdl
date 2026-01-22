@@ -19,7 +19,7 @@ FastDL is a PowerShell-based script and works the same across platforms once Pow
 **Run**
 
 ```powershell
-irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v2.0.0/fastdl.ps1 | iex
+irm https://raw.githubusercontent.com/rinkanekoii/fastdl/main/fastdl.ps1 | iex
 ```
 
 ---
@@ -40,7 +40,7 @@ brew install --cask powershell
 **Run**
 
 ```bash
-pwsh -Command "irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v2.0.0/fastdl.ps1 | iex"
+pwsh -Command "irm https://raw.githubusercontent.com/rinkanekoii/fastdl/main/fastdl.ps1 | iex"
 ```
 
 ---
@@ -61,7 +61,7 @@ sudo apt install -y powershell
 **Run**
 
 ```bash
-pwsh -Command "irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v2.0.0/fastdl.ps1 | iex"
+pwsh -Command "irm https://raw.githubusercontent.com/rinkanekoii/fastdl/main/fastdl.ps1 | iex"
 ```
 
 ---
@@ -72,7 +72,5 @@ pwsh -Command "irm https://raw.githubusercontent.com/rinkanekoii/fastdl/v2.0.0/f
 * The script does not require administrator/root privileges.
 * Source code can be reviewed safely before execution:
 
-[https://raw.githubusercontent.com/rinkanekoii/fastdl/v2.0.0/fastdl.ps1](https://raw.githubusercontent.com/rinkanekoii/fastdl/v2.0.0/fastdl.ps1)
-
-**Full Changelog**: https://github.com/rinkanekoii/fastdl/compare/v1.0.0...v2.0.0
+[https://raw.githubusercontent.com/rinkanekoii/fastdl/v2.0.0/fastdl.ps1](https://raw.githubusercontent.com/rinkanekoii/fastdl/main/fastdl.ps1)
 
