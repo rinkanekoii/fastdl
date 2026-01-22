@@ -1,9 +1,3 @@
-<# 
-.SYNOPSIS
-    FastDL - High-speed download manager using aria2
-.DESCRIPTION
-    A PowerShell script for fast file downloads with proxy support
-#>
 #Requires -Version 5.1
 
 & {
@@ -12,10 +6,6 @@ param(
     [switch]$Fast,
     [switch]$NoProxy
 )
-
-# ============================================================================
-# Cross-Platform Configuration
-# ============================================================================
 
 $script:OS = if ($IsWindows -or $env:OS -match 'Windows') { 'Windows' }
              elseif ($IsLinux) { 'Linux' }
@@ -29,10 +19,7 @@ $script:ScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.
 $script:LocalProxyFile = Join-Path $script:ScriptRoot 'proxies.json'
 $script:Proxy = ''
 $script:ProxyTestConfig = @{
-    Urls = @(
-        'http://www.gstatic.com/generate_204',
-        'https://www.msftconnecttest.com/connecttest.txt'
-    )
+    Urls = @('http://www.gstatic.com/generate_204', 'https://www.msftconnecttest.com/connecttest.txt')
     TimeoutSec = 15
     Retries = 2
     RetryDelaySec = 1
@@ -45,27 +32,24 @@ $script:DownloadDir = if ($script:OS -eq 'Windows') {
 }
 
 $script:Presets = @{
-    Stable = @{ 
-        Label = 'Stable (16 connections, 1M chunks)'
-        Desc  = 'Works with most servers, reliable'
+    Normal = @{ 
+        Label = 'Normal (16 conn, reliable)'
+        Desc  = 'Stable for most servers'
         Connections = 16
-        Split = 16
         Chunk = '1M'
         Aggressive = $false
     }
-    Speed = @{ 
-        Label = 'Fast (16 conn, 48 splits, 512K chunks)'
-        Desc  = 'Faster splits with safe timeouts'
+    Turbo = @{ 
+        Label = 'Turbo (16 conn, max optimization)'
+        Desc  = 'Maximum speed, aggressive settings'
         Connections = 16
-        Split = 48
         Chunk = '512K'
-        Aggressive = $false
+        Aggressive = $true
     }
-    Extreme = @{
-        Label = 'Extreme (16 conn, 96 splits, 256K chunks)'
-        Desc  = 'Maximum aggression, may not work on all servers'
+    Ultra = @{
+        Label = 'Ultra (16 conn, extreme settings)'
+        Desc  = 'Absolute maximum, may fail on some servers'
         Connections = 16
-        Split = 96
         Chunk = '256K'
         Aggressive = $true
     }
@@ -76,10 +60,6 @@ $script:Aria2Urls = @{
     Linux   = 'https://github.com/q3aql/aria2-static-builds/releases/download/v1.37.0/aria2-1.37.0-linux-gnu-64bit-build1.tar.bz2'
     macOS   = 'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-osx-darwin.tar.bz2'
 }
-
-# ============================================================================
-# Helpers
-# ============================================================================
 
 function Write-Status {
     param([string]$Msg, [string]$Type = 'Info')
@@ -117,18 +97,10 @@ function Test-TcpConnection {
 }
 
 function Test-ProxyAvailable {
-    param(
-        [string]$ProxyUrl,
-        [int]$TimeoutSec,
-        [int]$Retries,
-        [string[]]$TestUrls,
-        [int]$RetryDelaySec,
-        [switch]$Verbose
-    )
+    param([string]$ProxyUrl, [int]$TimeoutSec, [int]$Retries, [string[]]$TestUrls, [int]$RetryDelaySec, [switch]$Verbose)
     
     if (-not $ProxyUrl) { return $false }
     
-    # Parse proxy URL to get host and port
     try {
         $uri = [System.Uri]$ProxyUrl
         $proxyHost = $uri.Host
@@ -139,13 +111,11 @@ function Test-ProxyAvailable {
         return $false
     }
     
-    # Step 1: Test TCP connection to proxy
-    if (-not (Test-TcpConnection -Host $proxyHost -Port $proxyPort -TimeoutMs 5000)) {
+    if (-not (Test-TcpConnection -TargetHost $proxyHost -Port $proxyPort -TimeoutMs 5000)) {
         if ($Verbose) { Write-Status "TCP connection failed to ${proxyHost}:${proxyPort}" -Type Warning }
         return $false
     }
     
-    # Step 2: Test HTTP through proxy
     $config = $script:ProxyTestConfig
     $timeout = if ($TimeoutSec) { $TimeoutSec } else { $config.TimeoutSec }
     $retries = if ($Retries) { $Retries } else { $config.Retries }
@@ -162,9 +132,7 @@ function Test-ProxyAvailable {
                 Invoke-WebRequest -Uri $target -Proxy $ProxyUrl -TimeoutSec $timeout -UseBasicParsing -Method Get -ErrorAction Stop | Out-Null
                 return $true
             }
-            catch {
-                $lastError = $_
-            }
+            catch { $lastError = $_ }
         }
         if ($attempt -lt $retries -and $retryDelay -gt 0) {
             Start-Sleep -Seconds $retryDelay
@@ -178,7 +146,6 @@ function Test-ProxyAvailable {
 }
 
 function Get-ProxyList {
-    # Try local file first
     if (Test-Path $script:LocalProxyFile) {
         try {
             $content = Get-Content $script:LocalProxyFile -Raw -Encoding UTF8
@@ -188,20 +155,15 @@ function Get-ProxyList {
                 return $data.proxies
             }
         }
-        catch {
-            Write-Status "Failed to parse local proxies.json: $_" -Type Warning
-        }
+        catch { Write-Status "Failed to parse local proxies.json: $_" -Type Warning }
     }
     
-    # Fallback to GitHub
     try {
         $ProgressPreference = 'SilentlyContinue'
         $response = Invoke-RestMethod -Uri $script:ProxyListUrl -TimeoutSec 10
         return $response.proxies
     }
-    catch {
-        return @()
-    }
+    catch { return @() }
 }
 
 function Initialize-Proxy {
@@ -216,7 +178,6 @@ function Initialize-Proxy {
         return
     }
     
-    # Ask user what to do
     Write-Host ''
     $preChoice = Read-Choice -Prompt "Found $($proxies.Count) proxy(s). What to do?" -Options @(
         'Test and select working proxy',
@@ -232,23 +193,19 @@ function Initialize-Proxy {
     
     $allProxies = @()
     $workingProxies = @()
-    $selectedProxy = $null
     
     foreach ($p in $proxies) {
         $proxyUrl = "$($p.type)://$($p.ip):$($p.port)"
         $proxyInfo = @{ Url = $proxyUrl; Country = $p.country; Info = $p; Working = $false }
         
-        if ($preChoice -eq 1 -and -not $selectedProxy) {
-            # Test proxies - first TCP, then HTTP
+        if ($preChoice -eq 1) {
             Write-Host "  Testing $($p.country) ($proxyUrl)... " -NoNewline -ForegroundColor Gray
             
-            # Step 1: TCP test
             $tcpOk = Test-TcpConnection -TargetHost $p.ip -Port $p.port -TimeoutMs 5000
             if (-not $tcpOk) {
                 Write-Host "FAIL (TCP unreachable)" -ForegroundColor Red
             }
             else {
-                # Step 2: HTTP test
                 Write-Host "TCP OK... " -NoNewline -ForegroundColor DarkGreen
                 $httpOk = $false
                 foreach ($target in $script:ProxyTestConfig.Urls) {
@@ -264,25 +221,6 @@ function Initialize-Proxy {
                     Write-Host "OK" -ForegroundColor Green
                     $proxyInfo.Working = $true
                     $workingProxies += $proxyInfo
-                    
-                    # Ask user immediately
-                    Write-Host ''
-                    $useThis = Read-Choice -Prompt "Use this proxy ($proxyUrl)?" -Options @(
-                        'Yes, use this proxy',
-                        'No, continue testing',
-                        'No, use direct connection'
-                    )
-                    if ($useThis -eq 1) {
-                        $selectedProxy = $proxyUrl
-                    }
-                    elseif ($useThis -eq 3) {
-                        Write-Status 'Using direct connection' -Type Info
-                        return
-                    }
-                    else {
-                        # Continue testing; prevent duplicates if user declines
-                        $proxyInfo.Working = $false
-                    }
                 }
                 else {
                     Write-Host "FAIL (HTTP timeout/blocked)" -ForegroundColor Red
@@ -292,14 +230,6 @@ function Initialize-Proxy {
         $allProxies += $proxyInfo
     }
     
-    # If user already selected a proxy during testing
-    if ($selectedProxy) {
-        $script:Proxy = $selectedProxy
-        Write-Status "Proxy set: $selectedProxy" -Type Success
-        return
-    }
-    
-    # Determine which list to show
     $showList = if ($preChoice -eq 1 -and $workingProxies.Count -gt 0) { $workingProxies } else { $allProxies }
     
     if ($preChoice -eq 1 -and $workingProxies.Count -eq 0) {
@@ -314,7 +244,6 @@ function Initialize-Proxy {
         $showList = $allProxies
     }
     
-    # Show proxy list
     Write-Host ''
     $listTitle = if ($preChoice -eq 1 -and $workingProxies.Count -gt 0) { 
         "$($workingProxies.Count) working proxy(s):" 
@@ -348,22 +277,16 @@ function Get-FileName {
     try {
         $uri = [System.Uri]::new($U)
         $path = $uri.AbsolutePath
-        
-        # Get filename from path
         $n = [System.IO.Path]::GetFileName($path)
         
-        # URL decode the filename
         if (-not [string]::IsNullOrWhiteSpace($n)) {
             $n = [System.Uri]::UnescapeDataString($n)
         }
         
-        # Validate filename
         if ([string]::IsNullOrWhiteSpace($n) -or $n -eq '/' -or $n -notmatch '\.\w+$') {
-            # Try to get from query string or content-disposition later
             return "download_$(Get-Date -Format 'HHmmss')"
         }
         
-        # Clean invalid characters
         $invalid = [System.IO.Path]::GetInvalidFileNameChars()
         foreach ($c in $invalid) { $n = $n.Replace($c, '_') }
         
@@ -406,7 +329,6 @@ function Get-FileInfo {
         $resp = Invoke-WebRequest -Uri $Url -Method Head -UseBasicParsing -TimeoutSec 15 @proxyParam -ErrorAction Stop
         $size = [long]$resp.Headers['Content-Length']
         
-        # Try to get filename from Content-Disposition header
         $fileName = $null
         $cd = $resp.Headers['Content-Disposition']
         if ($cd -and $cd -match 'filename[*]?=(?:UTF-8'''')?["\s]*([^";\r\n]+)') {
@@ -421,21 +343,16 @@ function Get-FileInfo {
     }
 }
 
-# ============================================================================
-# Aria2 Setup (Temporary, No Install)
-# ============================================================================
-
 function Initialize-Aria2 {
     if ($script:Aria2 -and (Test-Path $script:Aria2)) { return $script:Aria2 }
 
-    # Check PATH first
     $cmd = Get-Command aria2c -ErrorAction SilentlyContinue
     if ($cmd) {
         $script:Aria2 = $cmd.Source
         return $script:Aria2
     }
 
-    Write-Status "Downloading aria2 for $($script:OS) (temp, no install)..." -Type Action
+    Write-Status "Downloading aria2 for $($script:OS)..." -Type Action
 
     if (-not (Test-Path $script:TempDir)) {
         New-Item -ItemType Directory -Path $script:TempDir -Force | Out-Null
@@ -455,7 +372,6 @@ function Initialize-Aria2 {
             $script:Aria2 = $exe.FullName
         }
         else {
-            # Linux/macOS: extract tar.bz2
             Push-Location $script:TempDir
             tar -xjf $archive 2>$null
             Pop-Location
@@ -480,24 +396,19 @@ function Initialize-Aria2 {
     catch {
         $installCmd = switch ($script:OS) {
             'Windows' { 'winget install aria2' }
-            'Linux'   { 'sudo apt install aria2  # or: sudo yum install aria2' }
+            'Linux'   { 'sudo apt install aria2' }
             'macOS'   { 'brew install aria2' }
         }
         throw "Failed to download aria2. Install manually: $installCmd`nError: $_"
     }
 }
 
-# ============================================================================
-# Download Engine
-# ============================================================================
-
 function Start-Download {
     param(
         [Parameter(Mandatory)][string]$Url,
         [int]$Connections = 16,
-        [int]$Split = 16,
         [string]$Chunk = '1M',
-        [switch]$MaxSpeed
+        [switch]$Aggressive
     )
 
     if (-not (Test-Url $Url)) {
@@ -511,17 +422,11 @@ function Start-Download {
         New-Item -ItemType Directory -Path $script:DownloadDir -Force | Out-Null
     }
 
-    # Get file info first (size and filename from headers)
     Write-Status "Getting file info..." -Type Action
     $fileInfo = Get-FileInfo -Url $Url
     $totalSize = $fileInfo.Size
     
-    # Get filename: prefer Content-Disposition, then URL, then fallback
-    $fileName = if ($fileInfo.FileName) { 
-        $fileInfo.FileName 
-    } else { 
-        Get-FileName -U $Url 
-    }
+    $fileName = if ($fileInfo.FileName) { $fileInfo.FileName } else { Get-FileName -U $Url }
     
     if (-not $fileInfo.Success) {
         Write-Status "Cannot get file info: $($fileInfo.Error)" -Type Warning
@@ -534,21 +439,19 @@ function Start-Download {
         Write-Status "File name: $fileName" -Type Info
     }
 
-    # aria2 limit: max 16 connections per server, but split can be higher
     $conn = [Math]::Min(16, $Connections)
-    $splitCount = [Math]::Max($Split, $conn)
 
     $aria2Args = @(
         $Url
         '-d', $script:DownloadDir
         '-o', $fileName
         '-x', $conn
-        '-s', $splitCount
+        '-s', $conn
         '-j', $conn
         '-k', $Chunk
         "--min-split-size=$Chunk"
         "--max-connection-per-server=$conn"
-        "--split=$splitCount"
+        "--split=$conn"
         '-c'
         '--file-allocation=none'
         '--summary-interval=1'
@@ -560,37 +463,43 @@ function Start-Download {
         '--http-accept-gzip=true'
         '--console-log-level=notice'
         '--download-result=full'
+        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     )
 
-    if ($MaxSpeed) {
-        # Aggressive settings for max speed
+    if ($Aggressive) {
         $aria2Args += @(
             '--max-tries=0'
-            '--retry-wait=1'
-            '--connect-timeout=5'
-            '--timeout=300'
-            '--max-file-not-found=5'
-            '--stream-piece-selector=geom'
+            '--retry-wait=0'
+            '--connect-timeout=3'
+            '--timeout=180'
+            '--max-file-not-found=3'
+            '--stream-piece-selector=inorder'
             '--uri-selector=adaptive'
-            '--disk-cache=512M'
+            '--disk-cache=1024M'
             '--piece-length=1M'
             '--optimize-concurrent-downloads=true'
             '--async-dns=true'
             '--max-download-limit=0'
             '--lowest-speed-limit=0'
-            '--socket-recv-buffer-size=16M'
+            '--socket-recv-buffer-size=32M'
             '--no-netrc=true'
             '--always-resume=true'
             '--max-resume-failure-tries=0'
             '--http-no-cache=true'
+            '--enable-mmap=true'
+            '--conditional-get=true'
+            '--reuse-uri=true'
+            '--max-tries=5'
+            '--retry-wait=1'
         )
     }
     else {
         $aria2Args += @(
-            '--max-tries=8'
+            '--max-tries=10'
             '--retry-wait=2'
-            '--connect-timeout=12'
+            '--connect-timeout=15'
             '--timeout=600'
+            '--disk-cache=512M'
         )
     }
 
@@ -599,19 +508,16 @@ function Start-Download {
     }
 
     Write-Host ''
-    $mode = if ($MaxSpeed) { 'MAX SPEED' } else { 'Stable' }
-    Write-Status "$conn connections | $splitCount splits | Chunk: $Chunk | Mode: $mode" -Type Action
+    $mode = if ($Aggressive) { 'AGGRESSIVE' } else { 'NORMAL' }
+    Write-Status "$conn connections | Chunk: $Chunk | Mode: $mode" -Type Action
     if ($script:Proxy) { Write-Status "Proxy: $($script:Proxy)" -Type Info }
     Write-Status "Save to: $script:DownloadDir\$fileName" -Type Info
     Write-Host ''
 
-    # Track download with progress
     $startTime = Get-Date
-    
     $destFile = Join-Path $script:DownloadDir $fileName
     $ariaControl = "$destFile.aria2"
     
-    # Check if resuming from previous download
     $initialSize = 0
     if (Test-Path $destFile) {
         $initialSize = (Get-Item $destFile).Length
@@ -620,7 +526,6 @@ function Start-Download {
         }
     }
     
-    # Start aria2 process
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $aria2
     $psi.Arguments = ($aria2Args | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
@@ -634,7 +539,6 @@ function Start-Download {
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     
-    # Capture output asynchronously for error logging
     $outputBuilder = [System.Text.StringBuilder]::new()
     $errorBuilder = [System.Text.StringBuilder]::new()
     
@@ -651,25 +555,21 @@ function Start-Download {
         $process.BeginOutputReadLine()
         $process.BeginErrorReadLine()
         
-        # Track for current speed calculation
         $lastBytes = $initialSize
         $lastTime = $startTime
         $currentSpeed = 0
         
-        # Monitor progress using file size (simpler, more reliable)
         while (-not $process.HasExited) {
             Start-Sleep -Milliseconds 500
             
             $now = Get-Date
             $elapsed = $now - $startTime
             
-            # Get current downloaded size from file
             $currentBytes = 0
             if (Test-Path $destFile) {
                 $currentBytes = (Get-Item $destFile -ErrorAction SilentlyContinue).Length
             }
             
-            # Calculate CURRENT speed (bytes in last interval) - more accurate than average
             $intervalSeconds = ($now - $lastTime).TotalSeconds
             if ($intervalSeconds -ge 0.5) {
                 $bytesInInterval = $currentBytes - $lastBytes
@@ -678,17 +578,11 @@ function Start-Download {
                 $lastTime = $now
             }
             
-            # Progress display
             if ($totalSize -gt 0 -and $currentBytes -gt 0) {
                 $percent = [Math]::Min(100, [Math]::Round(($currentBytes / $totalSize) * 100, 1))
                 
-                # ETA based on current speed
                 $remaining = $totalSize - $currentBytes
-                $eta = if ($currentSpeed -gt 0) { 
-                    [TimeSpan]::FromSeconds($remaining / $currentSpeed) 
-                } else { 
-                    [TimeSpan]::Zero 
-                }
+                $eta = if ($currentSpeed -gt 0) { [TimeSpan]::FromSeconds($remaining / $currentSpeed) } else { [TimeSpan]::Zero }
                 $etaStr = if ($eta.TotalSeconds -gt 0) { Format-Duration $eta } else { "--:--" }
                 
                 $speedStr = Format-Speed $currentSpeed
@@ -699,7 +593,6 @@ function Start-Download {
                 Write-Host $status -NoNewline
             }
             elseif ($currentBytes -gt 0) {
-                # Unknown total size
                 $speedStr = Format-Speed $currentSpeed
                 $dlStr = Format-FileSize $currentBytes
                 $elapsedStr = Format-Duration $elapsed
@@ -718,7 +611,6 @@ function Start-Download {
         Write-Host ""
     }
     finally {
-        # Kill aria2 process if still running (fixes CTRL+C leaving orphan process)
         if ($process -and -not $process.HasExited) {
             try {
                 $process.Kill()
@@ -737,19 +629,14 @@ function Start-Download {
     $endTime = Get-Date
     $totalDuration = $endTime - $startTime
     
-    # Get final file size
     $finalSize = 0
     if (Test-Path $destFile) {
         $finalSize = (Get-Item $destFile).Length
     }
     
-    # Check if .aria2 control file still exists (means incomplete)
     $controlFileExists = Test-Path $ariaControl
-    
-    # Determine success: exit code 0 OR (file size matches expected AND no control file)
     $isSuccess = ($code -eq 0) -or (($totalSize -gt 0) -and ($finalSize -ge $totalSize) -and (-not $controlFileExists))
     
-    # Calculate average speed (only bytes downloaded this session)
     $downloadedThisSession = $finalSize - $initialSize
     $avgSpeedTotal = if ($totalDuration.TotalSeconds -gt 0 -and $downloadedThisSession -gt 0) { 
         $downloadedThisSession / $totalDuration.TotalSeconds 
@@ -778,7 +665,6 @@ function Start-Download {
         }
         Write-Host '╚══════════════════════════════════════════════════════════════╝' -ForegroundColor Red
         
-        # Show error output if any
         $errOut = $errorBuilder.ToString()
         if ($errOut) {
             Write-Status "Error details:" -Type Error
@@ -790,15 +676,11 @@ function Start-Download {
     }
 }
 
-# ============================================================================
-# UI
-# ============================================================================
-
 function Show-Banner {
     Clear-Host
     Write-Host '=====================================' -ForegroundColor Cyan
     Write-Host '  FastDL - High Speed Downloader    ' -ForegroundColor Cyan
-    Write-Host "  OS: $($script:OS) | No install required" -ForegroundColor DarkGray
+    Write-Host "  OS: $($script:OS) | Optimized" -ForegroundColor DarkGray
     Write-Host '=====================================' -ForegroundColor Cyan
     if ($script:Proxy) {
         Write-Host "  Proxy: $($script:Proxy)" -ForegroundColor Green
@@ -859,30 +741,27 @@ function Menu-Download {
         $urls = @($url)
     }
 
-    # Select preset
     Write-Host ''
     $choice = Read-Choice -Prompt 'Download Mode' -Options @(
-        "$($script:Presets.Stable.Label) - $($script:Presets.Stable.Desc)",
-        "$($script:Presets.Speed.Label) - $($script:Presets.Speed.Desc)",
-        "$($script:Presets.Extreme.Label) - $($script:Presets.Extreme.Desc)"
+        "$($script:Presets.Normal.Label) - $($script:Presets.Normal.Desc)",
+        "$($script:Presets.Turbo.Label) - $($script:Presets.Turbo.Desc)",
+        "$($script:Presets.Ultra.Label) - $($script:Presets.Ultra.Desc)"
     )
     if ($choice -eq -1) { return }
 
     $preset = switch ($choice) {
-        1 { $script:Presets.Stable }
-        2 { $script:Presets.Speed }
-        3 { $script:Presets.Extreme }
+        1 { $script:Presets.Normal }
+        2 { $script:Presets.Turbo }
+        3 { $script:Presets.Ultra }
     }
-    $maxSpeed = ($choice -ge 2)
 
-    # Download
     $ok = 0; $fail = 0
     foreach ($u in $urls) {
         if ($Multi -and $urls.Count -gt 1) {
             Write-Host "`n$('-' * 50)" -ForegroundColor DarkCyan
             Write-Host $u -ForegroundColor Cyan
         }
-        if (Start-Download -Url $u -Connections $preset.Connections -Split $preset.Split -Chunk $preset.Chunk -MaxSpeed:$maxSpeed) { $ok++ }
+        if (Start-Download -Url $u -Connections $preset.Connections -Chunk $preset.Chunk -Aggressive:$preset.Aggressive) { $ok++ }
         else { $fail++ }
     }
 
@@ -951,18 +830,13 @@ function Main-Menu {
     }
 }
 
-# ============================================================================
-# Entry Point
-# ============================================================================
-
-# Command-line mode
 if ($Url) {
     try {
         Write-Status "OS: $($script:OS)" -Type Info
         Write-Status "Output: $script:DownloadDir" -Type Info
         if (-not $NoProxy) { Initialize-Proxy }
-        $preset = if ($Fast) { $script:Presets.Speed } else { $script:Presets.Stable }
-        Start-Download -Url $Url -Connections $preset.Connections -Split $preset.Split -Chunk $preset.Chunk -MaxSpeed:$Fast | Out-Null
+        $preset = if ($Fast) { $script:Presets.Turbo } else { $script:Presets.Normal }
+        Start-Download -Url $Url -Connections $preset.Connections -Chunk $preset.Chunk -Aggressive:$preset.Aggressive | Out-Null
     }
     catch {
         Write-Status "Error: $_" -Type Error
@@ -975,7 +849,6 @@ if ($Url) {
     exit
 }
 
-# Interactive mode
 try {
     Write-Status "OS: $($script:OS)" -Type Info
     Write-Status "Output: $script:DownloadDir" -Type Info
