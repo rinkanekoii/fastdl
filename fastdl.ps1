@@ -49,13 +49,22 @@ $script:Presets = @{
         Label = 'Stable (16 connections, 1M chunks)'
         Desc  = 'Works with most servers, reliable'
         Connections = 16
+        Split = 16
         Chunk = '1M'
     }
     Speed = @{ 
-        Label = 'Max Speed (16 conn x max split)'
-        Desc  = 'Fastest, aggressive settings'
+        Label = 'Fast (16 conn, 64 splits, 512K chunks)'
+        Desc  = 'Aggressive splitting for faster downloads'
         Connections = 16
-        Chunk = '1M'
+        Split = 64
+        Chunk = '512K'
+    }
+    Extreme = @{
+        Label = 'Extreme (16 conn, 128 splits, 256K chunks)'
+        Desc  = 'Maximum aggression, may not work on all servers'
+        Connections = 16
+        Split = 128
+        Chunk = '256K'
     }
 }
 
@@ -220,12 +229,13 @@ function Initialize-Proxy {
     
     $allProxies = @()
     $workingProxies = @()
+    $selectedProxy = $null
     
     foreach ($p in $proxies) {
         $proxyUrl = "$($p.type)://$($p.ip):$($p.port)"
         $proxyInfo = @{ Url = $proxyUrl; Country = $p.country; Info = $p; Working = $false }
         
-        if ($preChoice -eq 1) {
+        if ($preChoice -eq 1 -and -not $selectedProxy) {
             # Test proxies - first TCP, then HTTP
             Write-Host "  Testing $($p.country) ($proxyUrl)... " -NoNewline -ForegroundColor Gray
             
@@ -251,6 +261,22 @@ function Initialize-Proxy {
                     Write-Host "OK" -ForegroundColor Green
                     $proxyInfo.Working = $true
                     $workingProxies += $proxyInfo
+                    
+                    # Ask user immediately
+                    Write-Host ''
+                    $useThis = Read-Choice -Prompt "Use this proxy ($proxyUrl)?" -Options @(
+                        'Yes, use this proxy',
+                        'No, continue testing',
+                        'No, use direct connection'
+                    )
+                    if ($useThis -eq 1) {
+                        $selectedProxy = $proxyUrl
+                    }
+                    elseif ($useThis -eq 3) {
+                        Write-Status 'Using direct connection' -Type Info
+                        return
+                    }
+                    # else continue testing
                 }
                 else {
                     Write-Host "FAIL (HTTP timeout/blocked)" -ForegroundColor Red
@@ -258,6 +284,13 @@ function Initialize-Proxy {
             }
         }
         $allProxies += $proxyInfo
+    }
+    
+    # If user already selected a proxy during testing
+    if ($selectedProxy) {
+        $script:Proxy = $selectedProxy
+        Write-Status "Proxy set: $selectedProxy" -Type Success
+        return
     }
     
     # Determine which list to show
@@ -456,6 +489,7 @@ function Start-Download {
     param(
         [Parameter(Mandatory)][string]$Url,
         [int]$Connections = 16,
+        [int]$Split = 16,
         [string]$Chunk = '1M',
         [switch]$MaxSpeed
     )
@@ -494,20 +528,21 @@ function Start-Download {
         Write-Status "File name: $fileName" -Type Info
     }
 
-    # aria2 limit: max 16 connections per server
+    # aria2 limit: max 16 connections per server, but split can be higher
     $conn = [Math]::Min(16, $Connections)
+    $splitCount = [Math]::Max($Split, $conn)
 
     $aria2Args = @(
         $Url
         '-d', $script:DownloadDir
         '-o', $fileName
         '-x', $conn
-        '-s', $conn
+        '-s', $splitCount
         '-j', $conn
         '-k', $Chunk
         "--min-split-size=$Chunk"
         "--max-connection-per-server=$conn"
-        "--split=$conn"
+        "--split=$splitCount"
         '-c'
         '--file-allocation=none'
         '--summary-interval=1'
@@ -559,7 +594,7 @@ function Start-Download {
 
     Write-Host ''
     $mode = if ($MaxSpeed) { 'MAX SPEED' } else { 'Stable' }
-    Write-Status "$conn connections | Chunk: $Chunk | Mode: $mode" -Type Action
+    Write-Status "$conn connections | $splitCount splits | Chunk: $Chunk | Mode: $mode" -Type Action
     if ($script:Proxy) { Write-Status "Proxy: $($script:Proxy)" -Type Info }
     Write-Status "Save to: $script:DownloadDir\$fileName" -Type Info
     Write-Host ''
@@ -822,12 +857,17 @@ function Menu-Download {
     Write-Host ''
     $choice = Read-Choice -Prompt 'Download Mode' -Options @(
         "$($script:Presets.Stable.Label) - $($script:Presets.Stable.Desc)",
-        "$($script:Presets.Speed.Label) - $($script:Presets.Speed.Desc)"
+        "$($script:Presets.Speed.Label) - $($script:Presets.Speed.Desc)",
+        "$($script:Presets.Extreme.Label) - $($script:Presets.Extreme.Desc)"
     )
     if ($choice -eq -1) { return }
 
-    $preset = if ($choice -eq 1) { $script:Presets.Stable } else { $script:Presets.Speed }
-    $maxSpeed = ($choice -eq 2)
+    $preset = switch ($choice) {
+        1 { $script:Presets.Stable }
+        2 { $script:Presets.Speed }
+        3 { $script:Presets.Extreme }
+    }
+    $maxSpeed = ($choice -ge 2)
 
     # Download
     $ok = 0; $fail = 0
@@ -836,7 +876,7 @@ function Menu-Download {
             Write-Host "`n$('-' * 50)" -ForegroundColor DarkCyan
             Write-Host $u -ForegroundColor Cyan
         }
-        if (Start-Download -Url $u -Connections $preset.Connections -Chunk $preset.Chunk -MaxSpeed:$maxSpeed) { $ok++ }
+        if (Start-Download -Url $u -Connections $preset.Connections -Split $preset.Split -Chunk $preset.Chunk -MaxSpeed:$maxSpeed) { $ok++ }
         else { $fail++ }
     }
 
@@ -916,7 +956,7 @@ if ($Url) {
         Write-Status "Output: $script:DownloadDir" -Type Info
         if (-not $NoProxy) { Initialize-Proxy }
         $preset = if ($Fast) { $script:Presets.Speed } else { $script:Presets.Stable }
-        Start-Download -Url $Url -Connections $preset.Connections -Chunk $preset.Chunk -MaxSpeed:$Fast | Out-Null
+        Start-Download -Url $Url -Connections $preset.Connections -Split $preset.Split -Chunk $preset.Chunk -MaxSpeed:$Fast | Out-Null
     }
     catch {
         Write-Status "Error: $_" -Type Error
