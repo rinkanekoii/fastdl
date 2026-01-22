@@ -45,8 +45,8 @@ $script:Presets = @{
         SocketBuffer = '8M'
     }
     Fast = @{ 
-        Label = 'Fast (16 conn, optimized cache)'
-        Desc  = 'Better performance, safe timeouts'
+        Label = 'Fast (16 conn, optimized)'
+        Desc  = 'Better performance, works with proxies'
         Connections = 16
         Chunk = '1M'
         ConnectTimeout = 15
@@ -57,16 +57,16 @@ $script:Presets = @{
         SocketBuffer = '16M'
     }
     Turbo = @{
-        Label = 'Turbo (16 conn, max cache)'
-        Desc  = 'Maximum speed optimization'
+        Label = 'Turbo (16 conn, max speed)'
+        Desc  = 'Highest speed, proxy-compatible'
         Connections = 16
         Chunk = '1M'
         ConnectTimeout = 15
         Timeout = 600
         MaxTries = 10
         RetryWait = 2
-        DiskCache = '512M'
-        SocketBuffer = '32M'
+        DiskCache = '384M'
+        SocketBuffer = '24M'
     }
 }
 
