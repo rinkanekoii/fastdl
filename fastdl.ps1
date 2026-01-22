@@ -106,7 +106,7 @@ function Test-TcpConnection {
 }
 
 function Test-ProxyAvailable {
-    param([string]$ProxyUrl, [int]$TimeoutSec, [int]$Retries, [string[]]$TestUrls, [int]$RetryDelaySec, [switch]$Verbose)
+    param([string]$ProxyUrl, [int]$TimeoutSec, [int]$Retries, [string[]]$TestUrls, [int]$RetryDelaySec)
     
     if (-not $ProxyUrl) { return $false }
     
@@ -116,14 +116,17 @@ function Test-ProxyAvailable {
         $proxyPort = $uri.Port
     }
     catch {
-        if ($Verbose) { Write-Status "Invalid proxy URL: $ProxyUrl" -Type Error }
+        Write-Status "Invalid proxy URL: $ProxyUrl" -Type Error
         return $false
     }
     
+    Write-Host "  Testing TCP connection to ${proxyHost}:${proxyPort}... " -NoNewline -ForegroundColor Gray
     if (-not (Test-TcpConnection -TargetHost $proxyHost -Port $proxyPort -TimeoutMs 5000)) {
-        if ($Verbose) { Write-Status "TCP connection failed to ${proxyHost}:${proxyPort}" -Type Warning }
+        Write-Host "FAIL" -ForegroundColor Red
+        Write-Status "Proxy host unreachable (TCP connection failed)" -Type Error
         return $false
     }
+    Write-Host "OK" -ForegroundColor Green
     
     $config = $script:ProxyTestConfig
     $timeout = if ($TimeoutSec) { $TimeoutSec } else { $config.TimeoutSec }
@@ -133,12 +136,14 @@ function Test-ProxyAvailable {
     $targets = if ($TestUrls -and $TestUrls.Count -gt 0) { $TestUrls } else { $config.Urls }
     if (-not $targets -or $targets.Count -eq 0) { $targets = @('http://www.gstatic.com/generate_204') }
 
+    Write-Host "  Testing HTTP through proxy... " -NoNewline -ForegroundColor Gray
     $lastError = $null
     for ($attempt = 1; $attempt -le $retries; $attempt++) {
         foreach ($target in $targets) {
             try {
                 $ProgressPreference = 'SilentlyContinue'
                 Invoke-WebRequest -Uri $target -Proxy $ProxyUrl -TimeoutSec $timeout -UseBasicParsing -Method Get -ErrorAction Stop | Out-Null
+                Write-Host "OK" -ForegroundColor Green
                 return $true
             }
             catch { $lastError = $_ }
@@ -148,8 +153,9 @@ function Test-ProxyAvailable {
         }
     }
 
-    if ($Verbose -and $lastError) {
-        Write-Status "HTTP via proxy failed: $($lastError.Exception.Message)" -Type Warning
+    Write-Host "FAIL" -ForegroundColor Red
+    if ($lastError) {
+        Write-Status "HTTP test failed: $($lastError.Exception.Message)" -Type Error
     }
     return $false
 }
@@ -774,13 +780,16 @@ function Menu-Proxy {
             $p = Read-Host 'Proxy URL'
             if (-not [string]::IsNullOrWhiteSpace($p)) {
                 $newProxy = $p.Trim()
-                Write-Status "Testing proxy ($newProxy)..." -Type Action
+                Write-Host ''
+                Write-Status "Testing proxy: $newProxy" -Type Action
                 if (Test-ProxyAvailable -ProxyUrl $newProxy) {
+                    Write-Host ''
                     $script:Proxy = $newProxy
                     Write-Status "Proxy set: $($script:Proxy)" -Type Success
                 }
                 else {
-                    Write-Status 'Proxy unavailable, keeping current settings' -Type Warning
+                    Write-Host ''
+                    Write-Status 'Proxy test failed, not setting' -Type Warning
                 }
             }
         }
