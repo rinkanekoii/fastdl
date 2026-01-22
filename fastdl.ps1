@@ -51,20 +51,23 @@ $script:Presets = @{
         Connections = 16
         Split = 16
         Chunk = '1M'
+        Aggressive = $false
     }
     Speed = @{ 
-        Label = 'Fast (16 conn, 64 splits, 512K chunks)'
-        Desc  = 'Aggressive splitting for faster downloads'
+        Label = 'Fast (16 conn, 48 splits, 512K chunks)'
+        Desc  = 'Faster splits with safe timeouts'
         Connections = 16
-        Split = 64
+        Split = 48
         Chunk = '512K'
+        Aggressive = $false
     }
     Extreme = @{
-        Label = 'Extreme (16 conn, 128 splits, 256K chunks)'
+        Label = 'Extreme (16 conn, 96 splits, 256K chunks)'
         Desc  = 'Maximum aggression, may not work on all servers'
         Connections = 16
-        Split = 128
+        Split = 96
         Chunk = '256K'
+        Aggressive = $true
     }
 }
 
@@ -276,7 +279,10 @@ function Initialize-Proxy {
                         Write-Status 'Using direct connection' -Type Info
                         return
                     }
-                    # else continue testing
+                    else {
+                        # Continue testing; prevent duplicates if user declines
+                        $proxyInfo.Working = $false
+                    }
                 }
                 else {
                     Write-Host "FAIL (HTTP timeout/blocked)" -ForegroundColor Red
