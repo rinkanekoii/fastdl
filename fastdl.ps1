@@ -33,40 +33,20 @@ $script:DownloadDir = if ($script:OS -eq 'Windows') {
 
 $script:Presets = @{
     Normal = @{ 
-        Label = 'Normal (16 conn, stable)'
-        Desc  = 'Reliable for all servers'
+        Label = 'Normal (reliable)'
+        Desc  = 'Stable for all servers and proxies'
         Connections = 16
         Chunk = '1M'
-        ConnectTimeout = 15
-        Timeout = 600
-        MaxTries = 10
-        RetryWait = 2
         DiskCache = '64M'
         SocketBuffer = '8M'
     }
     Fast = @{ 
-        Label = 'Fast (16 conn, optimized)'
-        Desc  = 'Better performance, works with proxies'
+        Label = 'Fast (optimized)'
+        Desc  = 'Better performance, tested and working'
         Connections = 16
         Chunk = '1M'
-        ConnectTimeout = 15
-        Timeout = 600
-        MaxTries = 10
-        RetryWait = 2
         DiskCache = '256M'
         SocketBuffer = '16M'
-    }
-    Turbo = @{
-        Label = 'Turbo (16 conn, max speed)'
-        Desc  = 'Highest speed, proxy-compatible'
-        Connections = 16
-        Chunk = '1M'
-        ConnectTimeout = 15
-        Timeout = 600
-        MaxTries = 10
-        RetryWait = 2
-        DiskCache = '384M'
-        SocketBuffer = '24M'
     }
 }
 
@@ -423,10 +403,6 @@ function Start-Download {
         [Parameter(Mandatory)][string]$Url,
         [int]$Connections = 16,
         [string]$Chunk = '1M',
-        [int]$ConnectTimeout = 15,
-        [int]$Timeout = 600,
-        [int]$MaxTries = 10,
-        [int]$RetryWait = 2,
         [string]$DiskCache = '64M',
         [string]$SocketBuffer = '8M'
     )
@@ -484,10 +460,10 @@ function Start-Download {
         '--console-log-level=notice'
         '--download-result=full'
         '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        "--max-tries=$MaxTries"
-        "--retry-wait=$RetryWait"
-        "--connect-timeout=$ConnectTimeout"
-        "--timeout=$Timeout"
+        '--max-tries=10'
+        '--retry-wait=2'
+        '--connect-timeout=15'
+        '--timeout=600'
         "--disk-cache=$DiskCache"
         "--socket-recv-buffer-size=$SocketBuffer"
     )
@@ -732,16 +708,11 @@ function Menu-Download {
     Write-Host ''
     $choice = Read-Choice -Prompt 'Download Mode' -Options @(
         "$($script:Presets.Normal.Label) - $($script:Presets.Normal.Desc)",
-        "$($script:Presets.Fast.Label) - $($script:Presets.Fast.Desc)",
-        "$($script:Presets.Turbo.Label) - $($script:Presets.Turbo.Desc)"
+        "$($script:Presets.Fast.Label) - $($script:Presets.Fast.Desc)"
     )
     if ($choice -eq -1) { return }
 
-    $preset = switch ($choice) {
-        1 { $script:Presets.Normal }
-        2 { $script:Presets.Fast }
-        3 { $script:Presets.Turbo }
-    }
+    $preset = if ($choice -eq 1) { $script:Presets.Normal } else { $script:Presets.Fast }
 
     $ok = 0; $fail = 0
     foreach ($u in $urls) {
@@ -749,7 +720,7 @@ function Menu-Download {
             Write-Host "`n$('-' * 50)" -ForegroundColor DarkCyan
             Write-Host $u -ForegroundColor Cyan
         }
-        if (Start-Download -Url $u -Connections $preset.Connections -Chunk $preset.Chunk -ConnectTimeout $preset.ConnectTimeout -Timeout $preset.Timeout -MaxTries $preset.MaxTries -RetryWait $preset.RetryWait -DiskCache $preset.DiskCache -SocketBuffer $preset.SocketBuffer) { $ok++ }
+        if (Start-Download -Url $u -Connections $preset.Connections -Chunk $preset.Chunk -DiskCache $preset.DiskCache -SocketBuffer $preset.SocketBuffer) { $ok++ }
         else { $fail++ }
     }
 
@@ -824,7 +795,7 @@ if ($Url) {
         Write-Status "Output: $script:DownloadDir" -Type Info
         if (-not $NoProxy) { Initialize-Proxy }
         $preset = if ($Fast) { $script:Presets.Fast } else { $script:Presets.Normal }
-        Start-Download -Url $Url -Connections $preset.Connections -Chunk $preset.Chunk -ConnectTimeout $preset.ConnectTimeout -Timeout $preset.Timeout -MaxTries $preset.MaxTries -RetryWait $preset.RetryWait -DiskCache $preset.DiskCache -SocketBuffer $preset.SocketBuffer | Out-Null
+        Start-Download -Url $Url -Connections $preset.Connections -Chunk $preset.Chunk -DiskCache $preset.DiskCache -SocketBuffer $preset.SocketBuffer | Out-Null
     }
     catch {
         Write-Status "Error: $_" -Type Error
