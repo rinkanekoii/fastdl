@@ -1,0 +1,159 @@
+{
+  "proxies": [
+    {
+      "ip": "27.67.54.178",
+      "port": 8080,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam - Hanoi",
+      "latency_ms": 4307,
+      "uptime": "8% (208)",
+      "anonymity": "Transparent",
+      "checked": "2 hours ago"
+    },
+    {
+      "ip": "123.25.234.143",
+      "port": 8090,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam - Ho Chi Minh City",
+      "latency_ms": 5524,
+      "uptime": "11% (19)",
+      "anonymity": "Transparent",
+      "checked": "2 hours ago"
+    },
+    {
+      "ip": "14.170.154.193",
+      "port": 19132,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam - Thai Nguyen",
+      "latency_ms": 4034,
+      "uptime": "5% (140)",
+      "anonymity": "Transparent",
+      "checked": "2 hours ago"
+    },
+    {
+      "ip": "157.66.198.193",
+      "port": 39189,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam",
+      "latency_ms": 2113,
+      "uptime": "3% (180)",
+      "anonymity": "Transparent",
+      "checked": "2 hours ago"
+    },
+    {
+      "ip": "115.75.184.174",
+      "port": 8080,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam - Ho Chi Minh City",
+      "latency_ms": 3486,
+      "uptime": "12% (207)",
+      "anonymity": "Transparent",
+      "checked": "2 hours ago"
+    },
+    {
+      "ip": "14.241.39.169",
+      "port": 8080,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam - Bắc Ninh",
+      "latency_ms": 3089,
+      "uptime": "20% (5)",
+      "anonymity": "Transparent",
+      "checked": "2 hours ago"
+    },
+    {
+      "ip": "113.161.93.174",
+      "port": 6008,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam - Ho Chi Minh City",
+      "latency_ms": 5179,
+      "uptime": "3% (210)",
+      "anonymity": "Elite",
+      "checked": "2 hours ago"
+    },
+    {
+      "ip": "14.224.218.210",
+      "port": 8080,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam - Ho Chi Minh City",
+      "latency_ms": 4093,
+      "uptime": "9% (210)",
+      "anonymity": "Transparent",
+      "checked": "3 hours ago"
+    },
+    {
+      "ip": "14.224.181.172",
+      "port": 8080,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam - Hanoi",
+      "latency_ms": 4281,
+      "uptime": "10% (204)",
+      "anonymity": "Transparent",
+      "checked": "3 hours ago"
+    },
+    {
+      "ip": "160.191.167.216",
+      "port": 39212,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam",
+      "latency_ms": 3316,
+      "uptime": "4% (92)",
+      "anonymity": "Transparent",
+      "checked": "3 hours ago"
+    },
+    {
+      "ip": "203.167.14.15",
+      "port": 3128,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam",
+      "latency_ms": 5095,
+      "uptime": "12% (136)",
+      "anonymity": "Transparent",
+      "checked": "4 hours ago"
+    },
+    {
+      "ip": "14.224.183.185",
+      "port": 8080,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam - Ho Chi Minh City",
+      "latency_ms": 4384,
+      "uptime": "8% (206)",
+      "anonymity": "Transparent",
+      "checked": "7 hours ago"
+    },
+    {
+      "ip": "118.70.13.38",
+      "port": 41857,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam - Hanoi",
+      "latency_ms": 4493,
+      "uptime": "13% (171)",
+      "anonymity": "Elite",
+      "checked": "14 hours ago"
+    },
+    {
+      "ip": "117.3.5.90",
+      "port": 8080,
+      "type": "http",
+      "country": "VN",
+      "location": "Vietnam - Da Nang",
+      "latency_ms": 2897,
+      "uptime": "3% (45)",
+      "anonymity": "Transparent",
+      "checked": "22 hours ago"
+    }
+  ],
+  "updated": "2026-01-22T08:30:00+07:00"
+}

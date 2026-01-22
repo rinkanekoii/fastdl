@@ -1,12 +1,18 @@
 ﻿#!/usr/bin/env pwsh
 #Requires -Version 5.1
 
-& {
-[CmdletBinding()]
 param(
     [string]$Url,
-    [string]$Proxy,
-    [switch]$Fast
+    [switch]$Fast,
+    [switch]$NoProxy
+)
+
+& {
+
+param(
+    [string]$Url = $script:Url,
+    [switch]$Fast = $script:Fast,
+    [switch]$NoProxy = $script:NoProxy
 )
 
 # ============================================================================
@@ -20,8 +26,18 @@ $script:OS = if ($IsWindows -or $env:OS -match 'Windows') { 'Windows' }
 
 $script:TempDir = Join-Path ([System.IO.Path]::GetTempPath()) "fastdl_$PID"
 $script:Aria2 = $null
-$script:DefaultProxy = 'http://115.75.184.174:8080'
+$script:ProxyListUrl = 'https://raw.githubusercontent.com/rinkanekoii/fastdl/main/proxies.json'
+$script:LocalProxyFile = Join-Path $PSScriptRoot 'proxies.json'
 $script:Proxy = ''
+$script:ProxyTestConfig = @{
+    Urls = @(
+        'http://www.gstatic.com/generate_204',
+        'https://www.msftconnecttest.com/connecttest.txt'
+    )
+    TimeoutSec = 15
+    Retries = 2
+    RetryDelaySec = 1
+}
 
 $script:DownloadDir = if ($script:OS -eq 'Windows') {
     Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'
@@ -72,32 +88,217 @@ function Test-Url {
     return $U -match '^https?://.+'
 }
 
-function Test-ProxyAvailable {
-    param([string]$ProxyUrl)
+function Test-TcpConnection {
+    param([string]$TargetHost, [int]$Port, [int]$TimeoutMs = 5000)
     try {
-        $ProgressPreference = 'SilentlyContinue'
-        $null = Invoke-WebRequest -Uri 'http://www.gstatic.com/generate_204' -Proxy $ProxyUrl -TimeoutSec 5 -UseBasicParsing
-        return $true
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $connect = $tcp.BeginConnect($TargetHost, $Port, $null, $null)
+        $wait = $connect.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
+        if ($wait -and $tcp.Connected) {
+            $tcp.EndConnect($connect)
+            $tcp.Close()
+            return $true
+        }
+        $tcp.Close()
+        return $false
     }
     catch { return $false }
+}
+
+function Test-ProxyAvailable {
+    param(
+        [string]$ProxyUrl,
+        [int]$TimeoutSec,
+        [int]$Retries,
+        [string[]]$TestUrls,
+        [int]$RetryDelaySec,
+        [switch]$Verbose
+    )
+    
+    if (-not $ProxyUrl) { return $false }
+    
+    # Parse proxy URL to get host and port
+    try {
+        $uri = [System.Uri]$ProxyUrl
+        $proxyHost = $uri.Host
+        $proxyPort = $uri.Port
+    }
+    catch {
+        if ($Verbose) { Write-Status "Invalid proxy URL: $ProxyUrl" -Type Error }
+        return $false
+    }
+    
+    # Step 1: Test TCP connection to proxy
+    if (-not (Test-TcpConnection -Host $proxyHost -Port $proxyPort -TimeoutMs 5000)) {
+        if ($Verbose) { Write-Status "TCP connection failed to ${proxyHost}:${proxyPort}" -Type Warning }
+        return $false
+    }
+    
+    # Step 2: Test HTTP through proxy
+    $config = $script:ProxyTestConfig
+    $timeout = if ($TimeoutSec) { $TimeoutSec } else { $config.TimeoutSec }
+    $retries = if ($Retries) { $Retries } else { $config.Retries }
+    if ($retries -lt 1) { $retries = 1 }
+    $retryDelay = if ($RetryDelaySec -ge 0) { $RetryDelaySec } else { $config.RetryDelaySec }
+    $targets = if ($TestUrls -and $TestUrls.Count -gt 0) { $TestUrls } else { $config.Urls }
+    if (-not $targets -or $targets.Count -eq 0) { $targets = @('http://www.gstatic.com/generate_204') }
+
+    $lastError = $null
+    for ($attempt = 1; $attempt -le $retries; $attempt++) {
+        foreach ($target in $targets) {
+            try {
+                $ProgressPreference = 'SilentlyContinue'
+                Invoke-WebRequest -Uri $target -Proxy $ProxyUrl -TimeoutSec $timeout -UseBasicParsing -Method Get -ErrorAction Stop | Out-Null
+                return $true
+            }
+            catch {
+                $lastError = $_
+            }
+        }
+        if ($attempt -lt $retries -and $retryDelay -gt 0) {
+            Start-Sleep -Seconds $retryDelay
+        }
+    }
+
+    if ($Verbose -and $lastError) {
+        Write-Status "HTTP via proxy failed: $($lastError.Exception.Message)" -Type Warning
+    }
+    return $false
+}
+
+function Get-ProxyList {
+    # Try local file first
+    if (Test-Path $script:LocalProxyFile) {
+        try {
+            $content = Get-Content $script:LocalProxyFile -Raw -Encoding UTF8
+            $data = $content | ConvertFrom-Json
+            if ($data.proxies -and $data.proxies.Count -gt 0) {
+                Write-Status "Loaded proxies from local file" -Type Success
+                return $data.proxies
+            }
+        }
+        catch {
+            Write-Status "Failed to parse local proxies.json: $_" -Type Warning
+        }
+    }
+    
+    # Fallback to GitHub
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        $response = Invoke-RestMethod -Uri $script:ProxyListUrl -TimeoutSec 10
+        return $response.proxies
+    }
+    catch {
+        return @()
+    }
 }
 
 function Initialize-Proxy {
     if ($script:Proxy) { return }
     
     Write-Host ''
-    Write-Status "VN proxy available: $($script:DefaultProxy)" -Type Info
-    $useProxy = Read-Choice -Prompt 'Use this proxy [Vietnam]?' -Options @('Yes', 'No')
+    Write-Status 'Loading proxy list...' -Type Action
+    $proxies = Get-ProxyList
     
-    if ($useProxy -eq 1) {
-        Write-Status "Testing VN proxy ($($script:DefaultProxy))..." -Type Action
-        if (Test-ProxyAvailable -ProxyUrl $script:DefaultProxy) {
-            $script:Proxy = $script:DefaultProxy
-            Write-Status 'VN proxy OK!' -Type Success
+    if ($proxies.Count -eq 0) {
+        Write-Status 'No proxies available, using direct connection' -Type Warning
+        return
+    }
+    
+    # Ask user what to do
+    Write-Host ''
+    $preChoice = Read-Choice -Prompt "Found $($proxies.Count) proxy(s). What to do?" -Options @(
+        'Test and select working proxy',
+        'Skip testing, show all proxies',
+        'No proxy (direct connection)'
+    )
+    
+    if ($preChoice -eq -1) { exit }
+    if ($preChoice -eq 3) {
+        Write-Status 'Using direct connection' -Type Info
+        return
+    }
+    
+    $allProxies = @()
+    $workingProxies = @()
+    
+    foreach ($p in $proxies) {
+        $proxyUrl = "$($p.type)://$($p.ip):$($p.port)"
+        $proxyInfo = @{ Url = $proxyUrl; Country = $p.country; Info = $p; Working = $false }
+        
+        if ($preChoice -eq 1) {
+            # Test proxies - first TCP, then HTTP
+            Write-Host "  Testing $($p.country) ($proxyUrl)... " -NoNewline -ForegroundColor Gray
+            
+            # Step 1: TCP test
+            $tcpOk = Test-TcpConnection -TargetHost $p.ip -Port $p.port -TimeoutMs 5000
+            if (-not $tcpOk) {
+                Write-Host "FAIL (TCP unreachable)" -ForegroundColor Red
+            }
+            else {
+                # Step 2: HTTP test
+                Write-Host "TCP OK... " -NoNewline -ForegroundColor DarkGreen
+                $httpOk = $false
+                foreach ($target in $script:ProxyTestConfig.Urls) {
+                    try {
+                        $ProgressPreference = 'SilentlyContinue'
+                        Invoke-WebRequest -Uri $target -Proxy $proxyUrl -TimeoutSec $script:ProxyTestConfig.TimeoutSec -UseBasicParsing -Method Get -ErrorAction Stop | Out-Null
+                        $httpOk = $true
+                        break
+                    }
+                    catch { }
+                }
+                if ($httpOk) {
+                    Write-Host "OK" -ForegroundColor Green
+                    $proxyInfo.Working = $true
+                    $workingProxies += $proxyInfo
+                }
+                else {
+                    Write-Host "FAIL (HTTP timeout/blocked)" -ForegroundColor Red
+                }
+            }
         }
-        else {
-            Write-Status 'VN proxy unavailable, using direct connection' -Type Warning
+        $allProxies += $proxyInfo
+    }
+    
+    # Determine which list to show
+    $showList = if ($preChoice -eq 1 -and $workingProxies.Count -gt 0) { $workingProxies } else { $allProxies }
+    
+    if ($preChoice -eq 1 -and $workingProxies.Count -eq 0) {
+        Write-Host ''
+        Write-Status 'All proxies failed. Show all anyway?' -Type Warning
+        $fallback = Read-Choice -Prompt 'Options' -Options @('Show all (try anyway)', 'No proxy (direct)')
+        if ($fallback -eq -1) { exit }
+        if ($fallback -eq 2) {
+            Write-Status 'Using direct connection' -Type Info
+            return
         }
+        $showList = $allProxies
+    }
+    
+    # Show proxy list
+    Write-Host ''
+    $listTitle = if ($preChoice -eq 1 -and $workingProxies.Count -gt 0) { 
+        "$($workingProxies.Count) working proxy(s):" 
+    } else { 
+        "$($allProxies.Count) proxy(s) available:" 
+    }
+    Write-Status $listTitle -Type Info
+    
+    $options = @()
+    foreach ($px in $showList) {
+        $status = if ($px.Working) { '[OK]' } elseif ($preChoice -eq 2) { '' } else { '[FAIL]' }
+        $options += "$($px.Country) - $($px.Url) $status".Trim()
+    }
+    $options += 'No proxy (direct connection)'
+    
+    $choice = Read-Choice -Prompt 'Select proxy' -Options $options
+    
+    if ($choice -eq -1) { exit }
+    if ($choice -le $showList.Count) {
+        $selected = $showList[$choice - 1]
+        $script:Proxy = $selected.Url
+        Write-Status "Proxy enabled: $($script:Proxy)" -Type Success
     }
     else {
         Write-Status 'Using direct connection' -Type Info
@@ -297,7 +498,7 @@ function Start-Download {
     # aria2 limit: max 16 connections per server
     $conn = [Math]::Min(16, $Connections)
 
-    $args = @(
+    $aria2Args = @(
         $Url
         '-d', $script:DownloadDir
         '-o', $fileName
@@ -323,7 +524,7 @@ function Start-Download {
 
     if ($MaxSpeed) {
         # Aggressive settings for max speed
-        $args += @(
+        $aria2Args += @(
             '--max-tries=0'
             '--retry-wait=1'
             '--connect-timeout=5'
@@ -345,7 +546,7 @@ function Start-Download {
         )
     }
     else {
-        $args += @(
+        $aria2Args += @(
             '--max-tries=10'
             '--retry-wait=2'
             '--connect-timeout=15'
@@ -354,7 +555,7 @@ function Start-Download {
     }
 
     if ($script:Proxy) {
-        $args += "--all-proxy=$($script:Proxy)"
+        $aria2Args += "--all-proxy=$($script:Proxy)"
     }
 
     Write-Host ''
@@ -370,10 +571,19 @@ function Start-Download {
     $destFile = Join-Path $script:DownloadDir $fileName
     $ariaControl = "$destFile.aria2"
     
+    # Check if resuming from previous download
+    $initialSize = 0
+    if (Test-Path $destFile) {
+        $initialSize = (Get-Item $destFile).Length
+        if ($initialSize -gt 0) {
+            Write-Status "Resuming from $(Format-FileSize $initialSize)..." -Type Info
+        }
+    }
+    
     # Start aria2 process
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $aria2
-    $psi.Arguments = ($args | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
+    $psi.Arguments = ($aria2Args | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -384,62 +594,64 @@ function Start-Download {
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
     
-    # Capture output asynchronously
+    # Capture output asynchronously for error logging
     $outputBuilder = [System.Text.StringBuilder]::new()
     $errorBuilder = [System.Text.StringBuilder]::new()
     
-    $outputHandler = {
-        if ($EventArgs.Data) {
-            $outputBuilder.AppendLine($EventArgs.Data)
-        }
-    }
-    $errorHandler = {
-        if ($EventArgs.Data) {
-            $errorBuilder.AppendLine($EventArgs.Data)
-        }
-    }
+    $outputHandler = { if ($EventArgs.Data) { $outputBuilder.AppendLine($EventArgs.Data) } }
+    $errorHandler = { if ($EventArgs.Data) { $errorBuilder.AppendLine($EventArgs.Data) } }
     
     $process.EnableRaisingEvents = $true
     Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -Action $outputHandler -SourceIdentifier "aria2out_$PID" | Out-Null
     Register-ObjectEvent -InputObject $process -EventName ErrorDataReceived -Action $errorHandler -SourceIdentifier "aria2err_$PID" | Out-Null
     
+    $code = 0
     try {
         $null = $process.Start()
         $process.BeginOutputReadLine()
         $process.BeginErrorReadLine()
         
-        # Monitor progress
+        # Track for current speed calculation
+        $lastBytes = $initialSize
+        $lastTime = $startTime
+        $currentSpeed = 0
+        
+        # Monitor progress using file size (simpler, more reliable)
         while (-not $process.HasExited) {
             Start-Sleep -Milliseconds 500
             
             $now = Get-Date
             $elapsed = $now - $startTime
             
-            # Get current downloaded size
+            # Get current downloaded size from file
             $currentBytes = 0
             if (Test-Path $destFile) {
                 $currentBytes = (Get-Item $destFile -ErrorAction SilentlyContinue).Length
             }
             
-            # Calculate overall speed (total downloaded / elapsed time) - more stable
-            $overallSpeed = if ($elapsed.TotalSeconds -gt 1) { 
-                $currentBytes / $elapsed.TotalSeconds 
-            } else { 0 }
+            # Calculate CURRENT speed (bytes in last interval) - more accurate than average
+            $intervalSeconds = ($now - $lastTime).TotalSeconds
+            if ($intervalSeconds -ge 0.5) {
+                $bytesInInterval = $currentBytes - $lastBytes
+                $currentSpeed = if ($bytesInInterval -gt 0) { $bytesInInterval / $intervalSeconds } else { $currentSpeed * 0.9 }
+                $lastBytes = $currentBytes
+                $lastTime = $now
+            }
             
             # Progress display
             if ($totalSize -gt 0 -and $currentBytes -gt 0) {
                 $percent = [Math]::Min(100, [Math]::Round(($currentBytes / $totalSize) * 100, 1))
                 
-                # ETA based on overall speed
+                # ETA based on current speed
                 $remaining = $totalSize - $currentBytes
-                $eta = if ($overallSpeed -gt 0) { 
-                    [TimeSpan]::FromSeconds($remaining / $overallSpeed) 
+                $eta = if ($currentSpeed -gt 0) { 
+                    [TimeSpan]::FromSeconds($remaining / $currentSpeed) 
                 } else { 
                     [TimeSpan]::Zero 
                 }
                 $etaStr = if ($eta.TotalSeconds -gt 0) { Format-Duration $eta } else { "--:--" }
                 
-                $speedStr = Format-Speed $overallSpeed
+                $speedStr = Format-Speed $currentSpeed
                 $dlStr = Format-FileSize $currentBytes
                 $totalStr = Format-FileSize $totalSize
                 
@@ -448,21 +660,34 @@ function Start-Download {
             }
             elseif ($currentBytes -gt 0) {
                 # Unknown total size
-                $speedStr = Format-Speed $overallSpeed
+                $speedStr = Format-Speed $currentSpeed
                 $dlStr = Format-FileSize $currentBytes
                 $elapsedStr = Format-Duration $elapsed
                 
                 $status = "`r  Downloaded: {0,10}  Speed: {1,12}  Elapsed: {2}   " -f $dlStr, $speedStr, $elapsedStr
                 Write-Host $status -NoNewline
             }
+            elseif ($elapsed.TotalSeconds -gt 1) {
+                $status = "`r  Connecting... Elapsed: {0}   " -f (Format-Duration $elapsed)
+                Write-Host $status -NoNewline
+            }
         }
         
         $process.WaitForExit()
         $code = $process.ExitCode
-        
         Write-Host ""
     }
     finally {
+        # Kill aria2 process if still running (fixes CTRL+C leaving orphan process)
+        if ($process -and -not $process.HasExited) {
+            try {
+                $process.Kill()
+                $process.WaitForExit(1000)
+            }
+            catch { }
+        }
+        if ($process) { $process.Dispose() }
+        
         Unregister-Event -SourceIdentifier "aria2out_$PID" -ErrorAction SilentlyContinue
         Unregister-Event -SourceIdentifier "aria2err_$PID" -ErrorAction SilentlyContinue
         Get-Job -Name "aria2out_$PID" -ErrorAction SilentlyContinue | Remove-Job -Force
@@ -478,13 +703,20 @@ function Start-Download {
         $finalSize = (Get-Item $destFile).Length
     }
     
-    # Calculate average speed
-    $avgSpeedTotal = if ($totalDuration.TotalSeconds -gt 0) { 
-        $finalSize / $totalDuration.TotalSeconds 
+    # Check if .aria2 control file still exists (means incomplete)
+    $controlFileExists = Test-Path $ariaControl
+    
+    # Determine success: exit code 0 OR (file size matches expected AND no control file)
+    $isSuccess = ($code -eq 0) -or (($totalSize -gt 0) -and ($finalSize -ge $totalSize) -and (-not $controlFileExists))
+    
+    # Calculate average speed (only bytes downloaded this session)
+    $downloadedThisSession = $finalSize - $initialSize
+    $avgSpeedTotal = if ($totalDuration.TotalSeconds -gt 0 -and $downloadedThisSession -gt 0) { 
+        $downloadedThisSession / $totalDuration.TotalSeconds 
     } else { 0 }
 
     Write-Host ''
-    if ($code -eq 0) {
+    if ($isSuccess) {
         Write-Host '╔══════════════════════════════════════════════════════════════╗' -ForegroundColor Green
         Write-Host '║                    DOWNLOAD COMPLETE                         ║' -ForegroundColor Green
         Write-Host '╠══════════════════════════════════════════════════════════════╣' -ForegroundColor Green
@@ -683,7 +915,7 @@ if ($Url) {
     try {
         Write-Status "OS: $($script:OS)" -Type Info
         Write-Status "Output: $script:DownloadDir" -Type Info
-        Initialize-Proxy
+        if (-not $NoProxy) { Initialize-Proxy }
         $preset = if ($Fast) { $script:Presets.Speed } else { $script:Presets.Stable }
         Start-Download -Url $Url -Connections $preset.Connections -Chunk $preset.Chunk -MaxSpeed:$Fast | Out-Null
     }
@@ -703,7 +935,11 @@ try {
     Write-Status "OS: $($script:OS)" -Type Info
     Write-Status "Output: $script:DownloadDir" -Type Info
     $null = Initialize-Aria2
-    Initialize-Proxy
+    if (-not $NoProxy) {
+        Initialize-Proxy
+    } else {
+        Write-Status 'Direct connection (no proxy)' -Type Info
+    }
     Main-Menu
 }
 catch {
@@ -718,5 +954,4 @@ finally {
 
 Write-Host ''
 Write-Status 'Goodbye!' -Type Success
-
-} @args
+}
